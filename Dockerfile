@@ -1,16 +1,16 @@
 FROM scratch AS wheelhouse
 
-FROM python:3.13-slim-bookworm@sha256:a5a7017efc5969e00ae2b91c8eb0631049a569652aa4ffc4501769049ae45c72 AS sqlite-arm64
+FROM python:3.15-slim-bookworm@sha256:96599df822d0e1c6bb700014a05c7f3c8cabc6e0f7ff3c4f9f69cee033b4b5d9 AS sqlite-arm64
 ADD --checksum=sha256:61a67f7085f497fa7622c6e1ae8611b8b2796a2eca70dcecc8d9124ca4f0d46b https://conda.anaconda.org/conda-forge/linux-aarch64/libsqlite-3.54.1-hd26f1b6_101.conda /tmp/sqlite.conda
 
-FROM python:3.13-slim-bookworm@sha256:a5a7017efc5969e00ae2b91c8eb0631049a569652aa4ffc4501769049ae45c72 AS sqlite-amd64
+FROM python:3.15-slim-bookworm@sha256:96599df822d0e1c6bb700014a05c7f3c8cabc6e0f7ff3c4f9f69cee033b4b5d9 AS sqlite-amd64
 ADD --checksum=sha256:c294029f893d05286f1061bbab85b820f1eea73dd859af4bcc619197bcc34810 https://conda.anaconda.org/conda-forge/linux-64/libsqlite-3.54.1-h0737f62_101.conda /tmp/sqlite.conda
 
 FROM sqlite-${TARGETARCH} AS sqlite-build
 COPY build/extract_sqlite.py /tmp/extract_sqlite.py
 RUN python /tmp/extract_sqlite.py
 
-FROM python:3.13-slim-bookworm@sha256:a5a7017efc5969e00ae2b91c8eb0631049a569652aa4ffc4501769049ae45c72
+FROM python:3.15-slim-bookworm@sha256:96599df822d0e1c6bb700014a05c7f3c8cabc6e0f7ff3c4f9f69cee033b4b5d9
 COPY requirements.lock /tmp/tikflowso-requirements.lock
 RUN --mount=type=bind,from=wheelhouse,target=/opt/wheels \
     if ls /opt/wheels/*.whl >/dev/null 2>&1; then export PIP_NO_INDEX=1 PIP_FIND_LINKS=/opt/wheels; fi \
