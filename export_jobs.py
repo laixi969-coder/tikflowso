@@ -38,9 +38,8 @@ def submit(db,user,data):
     key=ws.ident(data.get("request_key"),100)
     params=data.get("params")
     if not isinstance(params,dict): raise ValueError("缺少导出条件")
-    allowed=("market","source","date","days","kind","category","segment","q","match","sort")
-    params={k:str(params[k]) for k in allowed if params.get(k)}
-    ws.check_source(user,params.get("source","demo"))
+    params={k:str(params[k]) for k in analytics.RANKING_KEYS if params.get(k) not in ("", None)}
+    ws.check_source(db,user,params.get("source","demo"))
     owner=ws.workspace(user)
     saved=db.execute("SELECT job FROM export_jobs WHERE uid=? AND owner=? AND request_key=?",
                      (user["id"],owner,key)).fetchone()
@@ -62,9 +61,10 @@ def listing(db,user):
 
 
 def file_for(db,user,job):
-    row=db.execute("SELECT state,length(file) FROM export_jobs WHERE uid=? AND owner=? AND job=?",
+    row=db.execute("SELECT state,length(file),params FROM export_jobs WHERE uid=? AND owner=? AND job=?",
                    (user["id"],ws.workspace(user),job)).fetchone()
     if not row: raise LookupError("未找到导出任务")
+    ws.check_source(db,user,json.loads(row["params"]).get("source","demo"))
     if row["state"]!="ready": raise ws.RequestError(409,"导出文件尚不可用")
     return row[1], db.blobopen("export_jobs","file",job,readonly=True)
 
@@ -105,7 +105,7 @@ def run_one(connect):
                     if not done.rowcount: return True
                     user=ws.get_user(db,job["uid"])
                     if not user or ws.workspace(user)!=job["owner"]: raise ValueError("工作区权限已变更")
-                    ws.check_source(user,params.get("source","demo"))
+                    ws.check_source(db,user,params.get("source","demo"))
                     ws.consume(db,user,"export_rows",count)
                     with db.blobopen("export_jobs","file",job["job"]) as blob:
                         while block:=source.read(65536): blob.write(block)

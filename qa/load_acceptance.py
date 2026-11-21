@@ -57,8 +57,8 @@ def exercise(tmp,seconds):
     server.DATABASE=dbpath
     server.initialize()
     with closing(server.connect()) as db,db:
-        analytics.import_rows(db,daily_rows(365,300),"history")
-        analytics.import_rows(db,daily_rows(1,60000),"large")
+        analytics.import_rows(db,daily_rows(365,300),"history",shared=True)
+        analytics.import_rows(db,daily_rows(1,60000),"large",shared=True)
     env={k:v for k,v in os.environ.items() if not k.startswith(("TIKFLOWSO_","STRIPE_"))}
     env['TIKFLOWSO_ENV_FILE']=str(tmp/'isolated.env')
     proc,base=start(dbpath,env)
@@ -66,7 +66,7 @@ def exercise(tmp,seconds):
         client=build_opener(HTTPCookieProcessor(CookieJar()))
         acc={"name":"Acceptance","email":"bench@test.invalid","password":"local-only-12345"}
         fetch(client,base,"/api/register",acc)
-        fetch(client,base,"/api/admin/claim",{"code":dbpath.with_suffix(".admin-setup.txt").read_text().strip()})
+        enrolled=fetch(client,base,"/api/admin/claim",{"code":dbpath.with_suffix(".admin-setup.txt").read_text().strip()})
         fetch(client,base,"/api/admin/provider",{"provider":"atlas","model":"fixture-vision","key":"fixture-backup",
                                                 "activate":True,"revision":0})
         fetch(client,base,"/api/admin/prompt",{"name":"ideas","text":"Recovery fixture","revision":1})
@@ -124,7 +124,7 @@ def exercise(tmp,seconds):
         restored,newbase=start(backup_path,env)
         try:
             fresh=build_opener(HTTPCookieProcessor(CookieJar()))
-            fetch(fresh,newbase,"/api/login",acc)
+            fetch(fresh,newbase,"/api/login",{**acc,"factor":enrolled["enrollment"]["recovery_codes"][0]})
             recovered=fetch(fresh,newbase,"/api/admin/settings")
             assert recovered["active"]=="atlas" and next(p for p in recovered["providers"] if p["name"]=="atlas")["has_key"]
             assert next(p for p in recovered["prompts"] if p["name"]=="ideas")["text"]=="Recovery fixture"

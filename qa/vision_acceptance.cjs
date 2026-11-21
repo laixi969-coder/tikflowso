@@ -40,6 +40,11 @@ async function fixtureGateway(){
       const data=JSON.parse(body), [prompt,picture]=data.messages.find(m=>m.role==='user').content;
       assert.equal(data.model,'fixture-vision');
       observedPrompts.push(data.messages.find(m=>m.role==='system')?.content);
+      if(observedPrompts.at(-1)?.startsWith("Translate the user's source text into English.")){
+        assert.deepEqual(prompt,{type:'text',text:'蓝色水杯 500 ml'});
+        assert.equal(data.messages.find(m=>m.role==='user').content.length,1);
+        res.end(JSON.stringify({choices:[{message:{content:'Blue cup 500 ml'}}]}));return;
+      }
       if(!picture){res.end(JSON.stringify({choices:[{message:{content:'Fixture text output'}}]}));return;}
       assert.ok(picture.image_url.url.startsWith('data:image/'));
       let output;
@@ -67,7 +72,7 @@ async function fixtureGateway(){
     }catch(e){res.writeHead(400);res.end(JSON.stringify({error:e.message}));}
   });
   service.listen(0,'127.0.0.1');await once(service,'listening');
-  Object.assign(env,{TIKFLOWSO_VISION_PROVIDER:'custom',TIKFLOWSO_CUSTOM_BASE_URL:'http://127.0.0.1:'+service.address().port+'/v1',TIKFLOWSO_CUSTOM_MODEL:'fixture-vision',TIKFLOWSO_MODEL_KEY:'contract-only'});
+  Object.assign(env,{TIKFLOWSO_TRUST_LOCAL_MODEL:'1',TIKFLOWSO_VISION_PROVIDER:'custom',TIKFLOWSO_CUSTOM_BASE_URL:'http://127.0.0.1:'+service.address().port+'/v1',TIKFLOWSO_CUSTOM_MODEL:'fixture-vision',TIKFLOWSO_MODEL_KEY:'contract-only'});
   if(adminTest){
     env.TIKFLOWSO_VISION_PROVIDER='bailian';
     for(const name of ['BAILIAN','VOLCENGINE','ATLAS','OPENROUTER','DEEPSEEK'])env['TIKFLOWSO_'+name+'_BASE_URL']=env.TIKFLOWSO_CUSTOM_BASE_URL+'/'+name.toLowerCase();
@@ -148,6 +153,29 @@ async function exerciseAdmin(page,base,browser){
   const generated=await page.request.post(base+'/api/generate',{data:{tool:'promotion',text:'蓝色水杯'}});
   assert.equal((await generated.json()).result,'Fixture text output');
   assert.ok(observedPrompts.some(x=>x?.includes('25 秒')));
+  const translator=await browser.newPage({storageState:await page.context().storageState()});
+  await translator.goto(base+'/#tools?tool=text_translate');
+  await translator.locator('.translation-form textarea').fill('蓝色水杯 500 ml');
+  await translator.locator('.translation-form select').selectOption('en');
+  await translator.locator('.translation-form button').click();
+  await translator.locator('.text-translator output').getByText('Blue cup 500 ml').waitFor();
+  assert.equal(await translator.locator('.translation-form textarea').inputValue(),'蓝色水杯 500 ml');
+  await translator.goto(base+'/#dashboard?source=demo&market=GB&days=14');
+  const search=translator.locator('#search-page');
+  await search.locator('[name=q]').fill('蓝色水杯 500 ml');
+  await search.locator('[data-field=search-kind]').selectOption('products');
+  await search.locator('[data-field=match]').selectOption('exact');
+  await search.locator('[data-translate-query]').click();
+  const dialog=translator.locator('dialog.text-translation');
+  await dialog.locator('select').selectOption('en');
+  await dialog.locator('.primary').click();
+  await dialog.locator('output').getByText('Blue cup 500 ml').waitFor();
+  assert.equal(await search.locator('[name=q]').inputValue(),'蓝色水杯 500 ml');
+  await dialog.locator('[data-use]').click();
+  await translator.waitForURL('**/#search?**');
+  const query=new URLSearchParams(new URL(translator.url()).hash.split('?')[1]);
+  assert.deepEqual(['q','kind','match','market','days'].map(key=>query.get(key)),['Blue cup 500 ml','products','exact','GB','14']);
+  await translator.close();
   await page.reload();await page.locator('[data-tab=history]').click();
   const download=page.waitForEvent('download');await page.locator('.ca-run summary').first().click();
   await page.locator('[data-report]').first().click();const report=JSON.parse(fs.readFileSync(await (await download).path()));

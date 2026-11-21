@@ -1,0 +1,465 @@
+{
+  "source": "https://echotik.live/board",
+  "operation": "inspect_web_page",
+  "evidence_id": "ev_d9eb445553eba1dd8b8eb7943337121aa73f2283f0116af0cd229ccb4aa6944a",
+  "client": "Chrome/157.0.8103.79",
+  "observed_controls": [
+    [
+      "button",
+      "Quick Search, Ctrl/Command+K to open, ESC to exit."
+    ],
+    [
+      "link",
+      "Data Analysis"
+    ],
+    [
+      "link",
+      "AI Tools"
+    ],
+    [
+      "link",
+      "Operation Tools"
+    ],
+    [
+      "link",
+      "API"
+    ],
+    [
+      "link",
+      "Resources"
+    ],
+    [
+      "link",
+      "AI Agent"
+    ],
+    [
+      "StaticText",
+      "Pricing"
+    ],
+    [
+      "StaticText",
+      "Data Analysis"
+    ],
+    [
+      "StaticText",
+      "AI Tools"
+    ],
+    [
+      "StaticText",
+      "Operation Tools"
+    ],
+    [
+      "StaticText",
+      "API"
+    ],
+    [
+      "StaticText",
+      "Resources"
+    ],
+    [
+      "StaticText",
+      "AI Agent"
+    ],
+    [
+      "InlineTextBox",
+      "Pricing"
+    ],
+    [
+      "link",
+      "Pricing"
+    ],
+    [
+      "link",
+      "TikTok report"
+    ],
+    [
+      "link",
+      "Upgrade Log"
+    ],
+    [
+      "link",
+      "Help Center"
+    ],
+    [
+      "link",
+      "Promotion Alliance"
+    ],
+    [
+      "link",
+      "Blog"
+    ],
+    [
+      "link",
+      "Alternatives & Guide"
+    ],
+    [
+      "InlineTextBox",
+      "Data Analysis"
+    ],
+    [
+      "InlineTextBox",
+      "AI Tools"
+    ],
+    [
+      "InlineTextBox",
+      "Operation Tools"
+    ],
+    [
+      "InlineTextBox",
+      "API"
+    ],
+    [
+      "InlineTextBox",
+      "Resources"
+    ],
+    [
+      "InlineTextBox",
+      "AI Agent"
+    ],
+    [
+      "link",
+      "Workplace"
+    ],
+    [
+      "button",
+      "Dashboard"
+    ],
+    [
+      "button",
+      "Products"
+    ],
+    [
+      "button",
+      "Shops"
+    ],
+    [
+      "button",
+      "Creators"
+    ],
+    [
+      "button",
+      "Lives"
+    ],
+    [
+      "button",
+      "Videos"
+    ],
+    [
+      "button",
+      "Trends"
+    ],
+    [
+      "button",
+      "Inspiration"
+    ],
+    [
+      "region",
+      "Category dashboard"
+    ],
+    [
+      "region",
+      "Live analysis"
+    ],
+    [
+      "StaticText",
+      "TikTok report"
+    ],
+    [
+      "StaticText",
+      "Upgrade Log"
+    ],
+    [
+      "StaticText",
+      "Help Center"
+    ],
+    [
+      "StaticText",
+      "Promotion Alliance"
+    ],
+    [
+      "StaticText",
+      "Blog"
+    ],
+    [
+      "StaticText",
+      "Alternatives & Guide"
+    ],
+    [
+      "StaticText",
+      "Workplace"
+    ],
+    [
+      "StaticText",
+      "Dashboard"
+    ],
+    [
+      "StaticText",
+      "Products"
+    ],
+    [
+      "StaticText",
+      "Shops"
+    ],
+    [
+      "StaticText",
+      "Creators"
+    ],
+    [
+      "StaticText",
+      "Lives"
+    ],
+    [
+      "StaticText",
+      "Videos"
+    ],
+    [
+      "StaticText",
+      "Trends"
+    ],
+    [
+      "StaticText",
+      "Inspiration"
+    ],
+    [
+      "link",
+      "Find Influencers"
+    ],
+    [
+      "link",
+      "Find Hot Products"
+    ],
+    [
+      "link",
+      "Find Hot Shops"
+    ],
+    [
+      "link",
+      "Trending Contents"
+    ],
+    [
+      "heading",
+      "Category dashboard"
+    ],
+    [
+      "combobox",
+      "Time range"
+    ],
+    [
+      "combobox",
+      "Category"
+    ],
+    [
+      "heading",
+      "US data trends"
+    ],
+    [
+      "link",
+      "More"
+    ],
+    [
+      "heading",
+      "Live analysis"
+    ],
+    [
+      "InlineTextBox",
+      "TikTok report"
+    ],
+    [
+      "InlineTextBox",
+      "Upgrade Log"
+    ],
+    [
+      "InlineTextBox",
+      "Help Center"
+    ],
+    [
+      "InlineTextBox",
+      "Promotion Alliance"
+    ],
+    [
+      "InlineTextBox",
+      "Blog"
+    ],
+    [
+      "InlineTextBox",
+      "Alternatives & Guide"
+    ],
+    [
+      "InlineTextBox",
+      "Workplace"
+    ],
+    [
+      "InlineTextBox",
+      "Dashboard"
+    ],
+    [
+      "InlineTextBox",
+      "Products"
+    ],
+    [
+      "InlineTextBox",
+      "Shops"
+    ],
+    [
+      "InlineTextBox",
+      "Creators"
+    ],
+    [
+      "InlineTextBox",
+      "Lives"
+    ],
+    [
+      "InlineTextBox",
+      "Videos"
+    ],
+    [
+      "InlineTextBox",
+      "Trends"
+    ],
+    [
+      "InlineTextBox",
+      "Inspiration"
+    ],
+    [
+      "link",
+      "Open full page"
+    ],
+    [
+      "button",
+      "Send"
+    ],
+    [
+      "StaticText",
+      "Category dashboard"
+    ],
+    [
+      "StaticText",
+      "US data trends"
+    ],
+    [
+      "StaticText",
+      "More"
+    ],
+    [
+      "StaticText",
+      "Live analysis"
+    ],
+    [
+      "heading",
+      "Top live rooms"
+    ],
+    [
+      "link",
+      "View details"
+    ],
+    [
+      "combobox",
+      "Search"
+    ],
+    [
+      "button",
+      "Translate"
+    ],
+    [
+      "button",
+      "Search"
+    ],
+    [
+      "StaticText",
+      "Find Influencers"
+    ],
+    [
+      "StaticText",
+      "Find Hot Products"
+    ],
+    [
+      "StaticText",
+      "Find Hot Shops"
+    ],
+    [
+      "StaticText",
+      "Trending Contents"
+    ],
+    [
+      "InlineTextBox",
+      "Category dashboard"
+    ],
+    [
+      "InlineTextBox",
+      "US data trends"
+    ],
+    [
+      "InlineTextBox",
+      "More"
+    ],
+    [
+      "InlineTextBox",
+      "Live analysis"
+    ],
+    [
+      "StaticText",
+      "Top live rooms"
+    ],
+    [
+      "StaticText",
+      "View details"
+    ],
+    [
+      "heading",
+      "Product Strategy"
+    ],
+    [
+      "heading",
+      "Similar Lives"
+    ],
+    [
+      "StaticText",
+      "Search"
+    ],
+    [
+      "InlineTextBox",
+      "Find Hot Shops"
+    ],
+    [
+      "InlineTextBox",
+      "Top live rooms"
+    ],
+    [
+      "InlineTextBox",
+      "View details"
+    ],
+    [
+      "StaticText",
+      "Product Strategy"
+    ],
+    [
+      "StaticText",
+      "Similar Lives"
+    ],
+    [
+      "StaticText",
+      "Translate"
+    ],
+    [
+      "InlineTextBox",
+      "Search"
+    ],
+    [
+      "button",
+      "Translate product names"
+    ],
+    [
+      "InlineTextBox",
+      "Product Strategy"
+    ],
+    [
+      "InlineTextBox",
+      "Similar Lives"
+    ],
+    [
+      "InlineTextBox",
+      "Translate"
+    ]
+  ],
+  "scope": "Selected labels from the accessibility tree of the public guest board."
+}

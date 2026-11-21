@@ -16,6 +16,7 @@ import unittest
 from unittest.mock import patch
 
 import analytics
+import assistant_chats
 import billing
 import export_jobs
 import insights
@@ -35,7 +36,7 @@ class LocalAcceptance(unittest.TestCase):
         self.path=Path(self.tmp.name)/"work.db"
         self.db=self.connect()
         self.addCleanup(self.db.close)
-        for init in (analytics.init,ws.init,export_jobs.init,partnerships.init): init(self.db)
+        for init in (analytics.init,ws.init,export_jobs.init,billing.init,partnerships.init): init(self.db)
         self.db.executemany("INSERT INTO users(id,name,email) VALUES(?,?,?)",[(1,"A","a@test.local"),(2,"B","b@test.local")])
         self.db.commit()
         self.a=ws.get_user(self.db,1)
@@ -49,6 +50,51 @@ class LocalAcceptance(unittest.TestCase):
 
     def queue(self,params,key="same"):
         with self.db: return export_jobs.submit(self.db,self.a,{"request_key":key,"params":params})["job"]
+
+    def test_assistant_uses_three_private_turns_in_resolved_scope(self):
+        assistant_chats.init(self.db)
+        ask = lambda **values: assistant_chats.answer(self.db,self.a,values)
+        with patch.object(studio,"generate",return_value={"result":"sample answer","references":[],"mode":"test"}) as generate:
+            first = ask(text="first")
+            chat = first["chat"]
+            self.assertTrue(first["scope"]["date"])
+            for question in ("second","third","fourth"):
+                ask(chat=chat,text=question,**first["scope"])
+            ask(chat=chat,text="another market",market="GB")
+            self.assertEqual(generate.call_args.kwargs["previous"],[])
+            ask(chat=chat,text="last",**first["scope"])
+            self.assertEqual([t["question"] for t in generate.call_args.kwargs["previous"]],["second","third","fourth"])
+        self.db.execute("UPDATE users SET owner=? WHERE id=?",(self.a["id"],self.b["id"]))
+        teammate=ws.get_user(self.db,self.b["id"])
+        self.assertEqual(assistant_chats.history(self.db,teammate)["items"],[])
+        with self.assertRaises(LookupError):
+            assistant_chats.history(self.db,teammate,chat)
+        self.assertEqual(len(assistant_chats.history(self.db,self.a,chat)["turns"]),6)
+
+    def test_numeric_research_filters_presets_and_export_parity(self):
+        src="research-range"
+        goods=[{"date":"2026-03-01","kind":"products","market":"US","id":str(i),"name":"Item",
+                "sales":5,"gmv":v,"price":price} for i,(v,price) in enumerate([(10,0),(20,2.25),(40,None)])]
+        analytics.import_rows(self.db, goods, src, shared=True)
+        analytics.import_rows(self.db,[{**goods[1],"date":"2026-03-02","price":3.5,"gmv":0,"sales":0}],src,shared=True)
+        query={"kind":"products","market":"US","source":src,"days":"2","min_gmv":"20","max_price":"3.50"}
+        ranked=analytics.handle(self.db,"/api/rankings",query)
+        self.assertEqual([r["id"] for r in ranked["items"]],["1"])
+        self.assertEqual([r["price"] for r in analytics.handle(self.db,"/api/detail",{**query,"id":"1"})["trend"]],[2.25,3.5])
+        self.assertEqual(analytics.handle(self.db,"/api/rankings",{**query,"max_price":"0","min_gmv":"0"})["total"],1)
+        for invalid in ({"max_price":"-1"},{"min_gmv":"nan"},{"max_sales":"2.5"},{"min_price":"4"},{"kind":"videos"}):
+            with self.assertRaises(ValueError): analytics.ranking_filter(invalid.get("kind","products"),{**query,**invalid})
+        saved={"name":"Range A","kind":"products","params":query}
+        with self.db: ws.ranking_presets(self.db,self.a,saved,True)
+        self.assertEqual(ws.ranking_presets(self.db,self.b,{"kind":"products"})["items"],[])
+        result=ws.ranking_presets(self.db,self.a,{"kind":"products"})["items"]
+        self.assertEqual(result,[{"name":"Range A","params":{k:v for k,v in query.items() if k!="kind"}}])
+        job=self.queue(query,key="filtered-csv")
+        self.assertTrue(export_jobs.run_one(self.connect))
+        _,blob=export_jobs.file_for(self.db,self.a,job)
+        with blob: self.assertEqual(blob.read(),server.csv_export(self.db,query)[0])
+        with self.db: ws.ranking_presets(self.db,self.a,{**saved,"remove":True},True)
+        self.assertFalse(ws.ranking_presets(self.db,self.a,{"kind":"products"})["items"])
 
     def test_export_recovery_idempotency_csv_and_quota(self):
         query={"source":"demo","market":"US","kind":"creators","days":"7","sort":"follower_growth"}

@@ -17,6 +17,15 @@ from urllib.error import HTTPError
 from urllib.request import build_opener, HTTPCookieProcessor, Request
 
 from load_acceptance import fetch, ROOT
+import backup_vault
+
+RECOVERY=[]
+
+def login(c,base):
+    fetch(c,base,"/api/login",{**ACCOUNT,**({"factor":RECOVERY.pop()} if RECOVERY else {})})
+
+def user_bundles(home):
+    return sorted(p for p in (home/"backups").iterdir() if p.name[:1].isdigit())
 
 ACCOUNT = {"name":"Deployment QA", "email":"deploy@example.invalid", "password":"qa-deployment-fixture"}
 SCOPE = {"kind":"products", "source":"demo", "market":"US", "id":"p01", "days":7}
@@ -46,7 +55,7 @@ def command(home, action, *args, source=ROOT, success=True):
 
 def account_state(base):
     c = client()
-    fetch(c,base,"/api/login",ACCOUNT)
+    login(c,base)
     assert fetch(c,base,"/api/me")["platform_admin"]
     conf = fetch(c,base,"/api/admin/settings")
     assert conf["active"] == "atlas" and not any(p["has_key"] for p in conf["providers"])
@@ -71,7 +80,7 @@ def clean(home):
         subprocess.run(["docker","image","rm",project(home)+":"+tag],capture_output=True)
 
 
-def exercise(tmp, previous_ref, weights=None, speech=None):
+def exercise(tmp, previous_ref, weights=None, speech=None, previous_package=None):
     live, recovered, unclaimed = tmp/"live", tmp/"recovered", tmp/"unclaimed"
     first_port, second_port = free_port(), free_port()
     while second_port == first_port:
@@ -79,14 +88,18 @@ def exercise(tmp, previous_ref, weights=None, speech=None):
     base = f"http://127.0.0.1:{first_port}"
     other = f"http://127.0.0.1:{second_port}"
     old = ROOT
-    if previous_ref:
+    if previous_package:
+        with tarfile.open(previous_package) as tar: tar.extractall(tmp/"previous",filter="data")
+        old, = (tmp/"previous").iterdir()
+    elif previous_ref:
         old = tmp/"previous"
         old.mkdir()
         archive = subprocess.check_output(["git","archive",previous_ref],cwd=ROOT)
         with tarfile.open(fileobj=io.BytesIO(archive)) as tar:
             tar.extractall(old,filter="data")
         for name in ("deploy.py","Dockerfile","compose.yaml",".dockerignore"):
-            shutil.copy2(ROOT/name,old/name)
+            if not (old/name).exists():
+                shutil.copy2(ROOT/name,old/name)
     try:
         command(live,"up","--port",first_port,source=old)
         before = container(live)
@@ -96,12 +109,13 @@ def exercise(tmp, previous_ref, weights=None, speech=None):
         flags = fetch(c,base,"/api/config")
         assert flags["vision_status"]=="pending_key" and not flags["model"] and not flags["billing"]["configured"]
         command(live,"backup",source=old)
-        bootstrap_bundle = next((live/"backups").iterdir())
+        bootstrap_bundle = user_bundles(live)[0]
         token = live/"data/tikflowso.admin-setup.txt"
         original_code = token.read_bytes()
         assert not any("admin-setup" in p.name for p in bootstrap_bundle.iterdir())
         fetch(c,base,"/api/register",ACCOUNT)
-        fetch(c,base,"/api/admin/claim",{"code":token.read_text().strip()})
+        claimed=fetch(c,base,"/api/admin/claim",{"code":token.read_text().strip()})
+        RECOVERY.extend(claimed.get("enrollment",{}).get("recovery_codes",[]))
         assert not token.exists()
         fetch(c,base,"/api/admin/provider",{"provider":"atlas","model":"qa-vision","key":"","activate":True,"revision":0})
         fetch(c,base,"/api/admin/prompt",{"name":"ideas","text":"Deployment rehearsal","revision":1})
@@ -122,18 +136,46 @@ def exercise(tmp, previous_ref, weights=None, speech=None):
         command(live,"upgrade")
         current = container(live)
         assert current and before != current
-        if previous_ref:
+        if previous_ref or previous_package:
             assert old_image != subprocess.check_output(["docker","inspect","-f","{{.Image}}",current],text=True)
+        if "enrollment" not in claimed:
+            assert not fetch(c,base,"/api/me")["platform_admin"]
+            credential=tmp/"qa-factor.json"
+            subprocess.run([sys.executable,str(ROOT/"manage.py"),"recover-admin","--db",str(live/"data/tikflowso.sqlite3"),
+                            "--email",ACCOUNT["email"],"--out",str(credential)],check=True,stdout=subprocess.DEVNULL)
+            RECOVERY.extend(json.loads(credential.read_text())["recovery_codes"])
+            login(c,base)
         assert fetch(c,base,"/api/me")["platform_admin"] and account_state(base) == expected
-        assert len(list((live/"backups").iterdir()))==2
-        print("PASS upgrade and automatic checkpoint; retained session, account, settings, favorite, totals and CSV",flush=True)
+        assert len(user_bundles(live))==2
+        print("PASS upgrade and automatic checkpoint; MFA and recovered account, settings, favorite, totals and CSV",flush=True)
+
+        question = {"text":"Which products sell the most?","market":"US","source":"demo","days":7,"locale":"en-US"}
+        chat = fetch(c,base,"/api/assistant/ask",question)["chat"]
+        chat_url = f"/api/assistant/chats?chat={chat}"
+        saved_chat = fetch(c,base,chat_url)
+        assert saved_chat["turns"][0]["question"]==question["text"] and saved_chat["turns"][0]["references"]
+        preset_url = "/api/ranking-presets?kind=products"
+        saved_presets = fetch(c,base,"/api/ranking-presets",{"kind":"products","name":"Deployment QA","params":{"min_gmv":"25"}})
+        assert saved_presets["items"][0]["params"]["min_gmv"]=="25"
+        case = fetch(c,base,"/api/support",{"subject":"Recovery check","message":"Inspect this report","nonce":"deploy_case_001"})
+        case_url = f"/api/support?id={case['id']}"
+        fetch(c,base,"/api/admin/support",{"id":case["id"],"message":"Report checked","nonce":"deploy_reply_001"})
+        saved_case = fetch(c,base,case_url)
+        assert saved_case["messages"][-1]["body"]=="Report checked"
+        request = fetch(c,base,"/api/monitor-capacity",{"slots":2,"reason":"Monitor two more rooms","nonce":"deploy_slots_001"})
+        fetch(c,base,"/api/admin/monitor-capacity",{"id":request["id"],"status":"approved"})
+        saved_capacity = fetch(c,base,"/api/monitor-capacity")
+        assert saved_capacity["capacity"]["added"]==2
 
         command(live,"backup")
-        bundles = sorted((live/"backups").iterdir())
+        bundles = user_bundles(live)
         assert len(bundles)==3
         bundle = bundles[-1]
-        assert set(json.loads((bundle/"manifest.json").read_text())) == {"tikflowso.sqlite3","tikflowso.providers.json","service.env"}
-        command(recovered,"restore",bundle,"--port",second_port,"--public-url",other)
+        key=live/"recovery/private.pem"
+        assert {p.name for p in bundle.iterdir()}=={backup_vault.PAYLOAD}
+        with backup_vault.unpack(bundle,key) as clear:
+            assert set(json.loads((clear/"manifest.json").read_text())) == {"tikflowso.sqlite3","tikflowso.providers.json","service.env"}
+        command(recovered,"restore",bundle,"--restore-key",key,"--port",second_port,"--public-url",other)
         assert account_state(other)==expected and not (recovered/"data/tikflowso.admin-setup.txt").exists()
         running = container(recovered)
         config_path = "/app/.data/tikflowso.providers.json"
@@ -155,7 +197,10 @@ def exercise(tmp, previous_ref, weights=None, speech=None):
 
         # Check sample files from the new image and the packaged Linux media tools.
         auth = client()
-        fetch(auth,other,"/api/login",ACCOUNT)
+        login(auth,other)
+        assert fetch(auth,other,chat_url)==saved_chat and fetch(auth,other,preset_url)==saved_presets
+        assert fetch(auth,other,case_url)==saved_case and fetch(auth,other,"/api/monitor-capacity")==saved_capacity
+        print("PASS private chat, filter, answered support case and approved monitor capacity survive independent restore",flush=True)
         for sample in ("en","zh","empty","video"):
             assert fetch(auth,other,"/api/admin/sample/"+sample,raw=True)
         probe = subprocess.check_output(["docker","exec",container(recovered),"ffprobe","-v","error",
@@ -173,21 +218,36 @@ def exercise(tmp, previous_ref, weights=None, speech=None):
             assert transcript["text"].strip() and " --> " in transcript["srt"] and transcript["seconds"] > 0
             print("PASS Linux offline transcription and SRT:",transcript["text"].strip(),flush=True)
 
+        rollback_target=tmp/"rollback-copy"
+        rollback_port=free_port()
+        rollback_base=f"http://127.0.0.1:{rollback_port}"
+        try:
+            command(live,"rollback","--to",rollback_target,"--port",rollback_port,"--public-url",rollback_base)
+            rollback_client=client()
+            if "enrollment" in claimed: login(rollback_client,rollback_base)
+            else: fetch(rollback_client,rollback_base,"/api/login",ACCOUNT)
+            assert fetch(rollback_client,rollback_base,"/api/favorites")["items"][0]["id"]=="p01"
+            assert fetch(c,base,chat_url)==saved_chat
+            print("PASS independent rollback to the previous image and snapshot, with later primary writes retained",flush=True)
+        finally: clean(rollback_target)
         # A real engine port conflict forces recreation to fail before publication.
         command(live,"upgrade","--port",second_port,success=False)
         assert account_state(base)==expected
+        assert fetch(c,base,chat_url)==saved_chat and fetch(c,base,preset_url)==saved_presets
+        assert fetch(c,base,case_url)==saved_case and fetch(c,base,"/api/monitor-capacity")==saved_capacity
         assert list(live.glob("failed-*"))
         command(live,"restore",bundle,success=False)
         corrupt = tmp/"corrupt"
         shutil.copytree(bundle,corrupt)
-        with (corrupt/"tikflowso.providers.json").open("ab") as f:
-            f.write(b" ")
-        command(tmp/"rejected","restore",corrupt,success=False)
+        payload=corrupt/backup_vault.PAYLOAD
+        broken=bytearray(payload.read_bytes()); broken[len(broken)//2]^=1
+        payload.write_bytes(broken)
+        command(tmp/"rejected","restore",corrupt,"--restore-key",key,success=False)
         assert not (tmp/"rejected/data").exists()
         assert account_state(other)==expected
         print("PASS failed upgrade rollback, occupied target protection and corrupt backup rejection",flush=True)
         port = free_port()
-        command(unclaimed,"restore",bootstrap_bundle,"--port",port)
+        command(unclaimed,"restore",bootstrap_bundle,"--port",port,"--restore-key",key)
         access = fetch(client(),f"http://127.0.0.1:{port}","/api/admin/access")
         assert access["initial_setup"] and not access["admin"]
         assert (unclaimed/"data/tikflowso.admin-setup.txt").read_bytes() != original_code
@@ -200,6 +260,7 @@ def exercise(tmp, previous_ref, weights=None, speech=None):
 
 if __name__=="__main__":
     parser=argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--previous-package",type=Path,help="Start from a previous local release tarball")
     parser.add_argument("--previous-ref",help="Package a previous Git revision as the starting application")
     parser.add_argument("--whisper-model",type=Path,help="Optional local GGML weights for real container ASR")
     parser.add_argument("--speech",type=Path,help="A spoken English audio sample for offline ASR")
@@ -207,4 +268,4 @@ if __name__=="__main__":
     if bool(opts.whisper_model) != bool(opts.speech):
         parser.error("Provide both --whisper-model and --speech for transcription")
     with tempfile.TemporaryDirectory(prefix="tikflowso-deploy-") as temp:
-        exercise(Path(temp).resolve(),opts.previous_ref,opts.whisper_model,opts.speech)
+        exercise(Path(temp).resolve(),opts.previous_ref,opts.whisper_model,opts.speech,opts.previous_package)

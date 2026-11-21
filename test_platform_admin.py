@@ -25,7 +25,7 @@ class PlatformAdministrationTests(unittest.TestCase):
         cfg=patch.object(control_settings,"FILE",self.path.with_suffix(".providers.json"))
         cfg.start()
         self.addCleanup(cfg.stop)
-        env=patch.dict(os.environ,{"TIKFLOWSO_VISION_PROVIDER":"bailian","DASHSCOPE_API_KEY":"env-fixture"},clear=True)
+        env=patch.dict(os.environ,{"TIKFLOWSO_TRUST_LOCAL_MODEL":"1","TIKFLOWSO_MODEL_URL":"http://127.0.0.1:9123/test","TIKFLOWSO_VISION_PROVIDER":"bailian","DASHSCOPE_API_KEY":"env-fixture"},clear=True)
         env.start()
         self.addCleanup(env.stop)
         self.db=sqlite3.connect(self.path)
@@ -96,7 +96,7 @@ class PlatformAdministrationTests(unittest.TestCase):
 
     def test_each_text_tool_uses_its_own_saved_instruction(self):
         tasks=("agent","ideas","promotion","title","product_title","outreach","extract")
-        with patch.object(studio,"model_configured",return_value=True), \
+        with patch.dict(os.environ,{"TIKFLOWSO_MODEL":"fixture-text"}), patch.object(studio,"model_configured",return_value=True), \
              patch.object(studio,"research",return_value=("查询记录",[])), \
              patch.object(studio,"infer",return_value="生成结果") as infer:
             for revision,task in enumerate(tasks):

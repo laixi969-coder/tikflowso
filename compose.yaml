@@ -1,13 +1,33 @@
 services:
   app:
-    build: .
+    build:
+      context: .
+      additional_contexts:
+        wheelhouse: ${TIKFLOWSO_WHEELHOUSE:-./build}
     image: ${TF_IMAGE:?use deploy.py}
     init: true
+    mem_limit: 2g
+    cpus: 2.0
+    pids_limit: 192
+    security_opt:
+      - no-new-privileges:true
     restart: unless-stopped
     user: "${TF_UID:?}:${TF_GID:?}"
     ports:
       - "127.0.0.1:${TF_PORT:?}:8765"
+    environment:
+      TIKFLOWSO_BACKUP_DIR: /backup
+      TIKFLOWSO_BACKUP_CERT: /run/tikflowso-recipient.pem
     volumes:
+      - type: bind
+        source: ${TF_BACKUP_DIR:?use deploy.py}
+        target: /backup
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ${TF_BACKUP_CERT:?use deploy.py}
+        target: /run/tikflowso-recipient.pem
+        read_only: true
       - type: bind
         source: ${TF_DATA:?}
         target: /app/.data

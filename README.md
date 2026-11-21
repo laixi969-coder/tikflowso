@@ -1,6 +1,17 @@
 # tikflowso
 
-面向 TikTok Shop 卖家、达人运营和内容策划的本机电商研究工作台。先阅读[产品需求与验收矩阵](docs/PRD.md)，再查阅[竞品公开证据](docs/对标记录.md)和[数据接入规范](docs/数据接入.md)。
+面向抖音电商和 TikTok Shop 卖家、达人运营和内容策划的本机电商研究工作台。先阅读[产品需求与验收矩阵](docs/PRD.md)，再查阅[竞品公开证据](docs/对标记录.md)和[数据接入规范](docs/数据接入.md)。
+
+## 1.4.0 本地部署包
+
+解压 `tikflowso-1.4.0.tar.gz`，进入解压目录后可使用下节命令首装或升级。在「市场概览」选择「中国大陆」，即可查看抖音电商的演示榜单，成交额与标价均以人民币显示。已有实例升级时会自动补入国内样例。[国内市场验收记录](docs/PRD.md#131-中国大陆市场)
+
+首页提供选品、找达人、店铺和内容榜、直播间分析及可引用来源的问答。可先用内置演示源走通操作，再在「使用指南」导入自己的数据、在「管理员后台」填写模型 key。[工作台功能与验收记录](docs/PRD.md#130-工作台逐项对照)
+
+```sh
+tar -xzf tikflowso-1.4.0.tar.gz
+cd tikflowso-1.4.0
+```
 
 ## 一键部署、升级与恢复
 
@@ -18,16 +29,16 @@ python3 deploy.py
 python3 deploy.py --public-url https://research.example.com
 ```
 
-**持久化**　默认实例目录为 `~/.local/share/tikflowso`，也可在每条命令中用相同的 `--home` 指定位置。其 `data/` 挂载到容器的 `/app/.data`。数据库保存账户、平台角色、业务记录及导出文件；`tikflowso.providers.json` 保存后台模型、key 与提示词；`service.env` 保存部署域名及可选服务配置。后两份文件含明文凭据，使用 0600 权限。后台保存即时生效，手动修改 `service.env` 后执行升级命令生效。
+**持久化**　默认实例目录为 `~/.local/share/tikflowso`，也可在每条命令中用相同的 `--home` 指定位置。其 `data/` 挂载到容器的 `/app/.data`。数据库保存账户、平台角色、业务记录及导出文件；`tikflowso.providers.json` 保存后台模型、key 与提示词；`service.env` 保存部署域名及可选服务配置。后两份文件含明文凭据，使用 0600 权限。后台保存即时生效，手动修改 `service.env` 后执行升级命令生效。请使用加密磁盘存放在线数据和密钥。容器仅挂载备份公钥。
 
 **接入已有工作区**　迁移原来用 `server.py` 启动的实例时，先执行 `python3 manage.py backup-deployment --db .data/tikflowso.sqlite3 --out /绝对路径/迁移备份`，再用下方的 `restore` 命令指定新目录。既有后台配置会随包迁移；原来仅存于开发 `.env` 的字段按需写入新实例的 `data/service.env`。
 
 | 操作 | 在项目目录执行 |
 |---|---|
-| 升级 | 取得新版代码后运行 `python3 deploy.py upgrade`。先构建，再暂停旧服务、生成升级前备份并启动新镜像；启动失败时，脚本用旧镜像和备份恢复已有容器实例 |
-| 在线备份 | `python3 deploy.py backup`。命令打印新目录，位于实例的 `backups/` 下。将整个目录私密复制到备份主机 |
-| 校验 | `python3 manage.py verify-deployment --dir /绝对路径/备份目录`。核对 SHA-256、SQLite 完整性、外键、表行数和分市场商品金额 |
-| 独立恢复 | `python3 deploy.py restore /绝对路径/备份目录 --home /绝对路径/新实例 --port 8766`。可加 `--public-url` 更改对外地址；验证完成后再切换代理 |
+| 升级 | 取得新版代码后运行 `python3 deploy.py upgrade`。候选镜像先运行整套回归，再暂停旧服务、生成加密备份并启动新镜像；启动失败时，脚本用旧镜像和备份恢复已有容器实例 |
+| 在线备份 | `python3 deploy.py backup`。命令打印新目录，位于实例的 `backups/` 下。可用 `--backup-dir` 指向独立的已挂载备份卷。部署每天按 UTC 自动生成一个加密副本 |
+| 校验 | `python3 manage.py verify-deployment --dir /绝对路径/备份目录 --restore-key /原实例/recovery/private.pem`。核对 SHA-256、SQLite 完整性、外键、表行数和分市场商品金额 |
+| 独立恢复 | `python3 deploy.py restore /绝对路径/备份目录 --restore-key /原实例/recovery/private.pem --home /绝对路径/新实例 --port 8766`。可加 `--public-url` 更改对外地址；验证完成后再切换代理 |
 | 暂停 | `python3 deploy.py stop`。数据保留，运行 `python3 deploy.py` 可重新启动 |
 
 恢复包包含数据库、已保存的后台配置及已有的 `service.env`。初始化码仅在尚未绑定管理员的目标上重新生成。模型目录缓存可在后台重新同步；自备转写权重、授权供数文件、通知路由和汇率文件需另外迁移到配置指定的位置。容器内文件路径以 `/app/.data/` 开头。
@@ -43,7 +54,7 @@ cd /Users/caiwenbin/tikflowso
 python3 server.py
 ```
 
-打开 [本地工作台](http://127.0.0.1:8765/)。首次启动会创建 `.data/tikflowso.sqlite3`，载入美国、英国、印度尼西亚和马来西亚共 75 天的合成样例。默认截止日为 2026-11-19。可用 `--db /absolute/path/store.sqlite3 --port 8766` 指定其他数据库和端口。
+打开 [本地工作台](http://127.0.0.1:8765/)。首次启动会创建 `.data/tikflowso.sqlite3`，载入中国大陆、美国、英国、印度尼西亚和马来西亚各 75 天的合成样例。默认截止日为 2026-11-19。可用 `--db /absolute/path/store.sqlite3 --port 8766` 指定其他数据库和端口。
 
 **五分钟体验**：在市场概览选择美国和近 7 天，从市场排行榜打开一个商品，检查日趋势及关联店铺，加入收藏和监控。进入监控中心设置销量阈值，再去商品榜按当前条件导出 CSV。页面标明来源；授权数据与演示数据分别查询。
 
@@ -108,7 +119,7 @@ python3 server.py
 
 部署后，访问工作台网址的 `/#admin`。本机可直接打开[云端 API 管理后台](http://127.0.0.1:8765/#admin)。图片翻译和视频镜头分析使用云端推理，无需下载视觉模型。
 
-1. 登录你要用于平台管理的工作台账户。首次启动会在数据库旁生成一次性初始化码，默认路径为 `.data/tikflowso.admin-setup.txt`。在后台输入后绑定当前账户，初始化码随即失效。其他工作区的所有者仍使用原有工作区权限。如需恢复管理权限，可在服务器执行 `python3 manage.py grant-admin --db .data/tikflowso.sqlite3 --email 已注册的邮箱`。
+1. 登录你要用于平台管理的工作台账户。首次启动会在数据库旁生成一次性初始化码，默认路径为 `.data/tikflowso.admin-setup.txt`。在后台输入后绑定当前账户，初始化码随即失效。其他工作区的所有者仍使用原有工作区权限。保存验证器密钥和八个一次性恢复码。1.3.1 的已有管理员、丢失验证器的管理员，可在核实身份后由宿主机执行 `manage.py recover-admin`。新管理员通过账户页生成交接凭证。具体命令见[运维手册](docs/运维与数据保护.md)。
 2. 在「供应商配置」选择已开通的平台，填写 key 并保存。可分别保存五家的 key，也可只填一家。点击「同步模型」获取该账号可见的最新目录，或点击「同步全部目录」分别刷新五家。目录支持选择视觉模型，也可手填模型 ID 或火山推理接入点。输入类型不明确的模型会标记为待测。
 3. 保存模型后点「测试连接」，后台会发送一张英文样图，核对模型识别出的标题。再点「一键样例验收」，逐项查看英文图翻中文、中文图翻英文、空白图、四秒双镜头视频的结果。在「运行记录」可以重看失败原因和下载 JSON 报告。推理使用该标签页的账号和模型，按供应商规则计费。
 4. 验收通过后，勾选「将此平台用于工作台视觉任务」并保存，即时切换线上图片和视频工具。需要文本生成时再勾选「同时用于数据问答与文本创作」；问答会向该平台提交问题和相关查询结果。默认可以使用本地数据库问答和创作模板。
@@ -180,22 +191,16 @@ python3 manage.py dispute --help
 ## 检查与恢复
 
 ```sh
-python3 -m unittest discover -v
+python3 -m unittest discover -q
 node qa/browser_acceptance.cjs
 python3 qa/load_acceptance.py --seconds 30
-python3 manage.py backup --db .data/tikflowso.sqlite3 --out /absolute/path/backup.sqlite3
-python3 manage.py verify --db /absolute/path/backup.sqlite3
+python3 deploy.py backup --home /部署实例
+python3 manage.py verify-deployment --dir /备份目录 --restore-key /部署实例/recovery/private.pem
+python3 deploy.py restore /备份目录 --restore-key /部署实例/recovery/private.pem --home /独立恢复实例 --port 8766
 ```
 
-备份通过 SQLite 在线备份接口从一致读事务创建到新文件，并检查表完整性、外键、记录数量及分市场商品金额总和。可使用独立端口执行 `python3 server.py --db /absolute/path/backup.sqlite3 --port 8766` 试恢复。SQLite 备份包含账户、平台管理员、运行记录、授权资料和工作区数据。恢复供应商密钥、模型选择和自定义提示词时，还需将单独备份的 `*.providers.json` 恢复到目标数据库旁，使用相同文件名前缀并保留 0600 权限。
+新备份目录只含经过认证加密的 `snapshot.cms`。解密校验核对配置文件哈希、SQLite 完整性及外键。请将原实例的恢复私钥和注销登记簿分别备份到受控位置。恢复至另一个目录后，核对授权来源、账户和财务合计，再切换流量。从旧版升级的管理员需要重新绑定验证器。
 
-迁移整套后台配置时可以用下面的命令生成一个新的私有目录。目录中包含数据库、已存在的供应商配置和文件哈希清单。将其复制到恢复主机，先核对清单，再用**工作副本**启动。部署主机的环境变量、供数文件、素材处理工具及外部服务权限按目标主机配置。
-
-```sh
-python3 manage.py backup-deployment --db .data/tikflowso.sqlite3 --out /absolute/path/backup-directory
-python3 manage.py verify-deployment --dir /absolute/path/backup-directory
-cp -Rp /absolute/path/backup-directory /absolute/path/recovery-instance
-python3 server.py --db /absolute/path/recovery-instance/tikflowso.sqlite3 --port 8766
-```
+[升级交接、连续副本、预算与故障处置](docs/运维与数据保护.md) · [数据使用与隐私说明](web/privacy.html)
 
 逐项结果、复验环境和负载数字见 [PRD 第 10 节](docs/PRD.md#10-逐项验收记录)。正式上线还需要生产数据授权、供应商和模型实联、支付沙箱交易、对外 HTTPS 托管及生产负载和恢复演练。当前没有实际商业供数、支付订单或经供应商认证的 SLA。

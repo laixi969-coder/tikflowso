@@ -22,7 +22,7 @@ class AdapterTests(unittest.TestCase):
         self.db.execute("INSERT INTO users(name,email) VALUES('Ana','ana@example.test')")
         self.user=workspace.get_user(self.db,1)
         batch=[{"market":"US","kind":k,"id":"01","date":"2026-11-19","gmv":10,"sales":1,"name":"Example"} for k in ("creators","lives")]
-        analytics.import_rows(self.db,batch,"licensed")
+        analytics.import_rows(self.db,batch,"licensed",shared=True)
         self.db.commit()
 
     def test_private_contact_catalog(self):
@@ -44,6 +44,8 @@ class AdapterTests(unittest.TestCase):
                 stream.ingest(self.db,"secret",{"points":[{**point,"value":88}]})
             result=stream.recent(self.db,{**point,"source":"licensed"})
             self.assertEqual([r["value"] for r in result],[88])
+            self.assertEqual(stream.recent(self.db,{**point,"source":"licensed"},window=("2026-11-20","2026-11-20")),result)
+            self.assertEqual(stream.recent(self.db,{**point,"source":"licensed"},window=("2026-11-01","2026-11-19")),[])
             with self.assertRaises(ValueError),self.db:
                 stream.ingest(self.db,"secret",{"points":[{**point,"id":"unknown"}]})
 

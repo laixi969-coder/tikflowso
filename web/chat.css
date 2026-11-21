@@ -1,0 +1,12 @@
+.research-skill-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,245px),1fr));gap:10px;margin-top:16px}
+.research-skill{display:grid;align-content:start;gap:7px;padding:14px;text-align:start;font:inherit;color:inherit;background:#fff;border:1px solid #cbd6ce;border-radius:8px;cursor:pointer}
+.research-skill:hover,.research-skill:focus-visible,.research-skill[aria-pressed=true],[data-groups] [aria-pressed=true]{border-color:#779a78;background:#edf4ea}
+.research-skill span,.research-turn small{font-size:13px;color:#536558}
+[data-skill-fields]:not([hidden]){display:grid;gap:9px}
+.tf-form [data-comments-field][hidden]{display:none}
+.research-turn{border-bottom:1px solid #dce4db;padding:12px 0;min-width:0;overflow-wrap:anywhere}
+.research-turn p{white-space:pre-wrap}
+.research-draft{margin:12px 0}
+.research-draft summary{cursor:pointer}
+.research-draft label{display:grid;gap:4px;margin:10px 0}
+.research-draft textarea{width:100%;padding:10px;border:1px solid #cbd6ce;border-radius:7px;font:inherit;box-sizing:border-box}

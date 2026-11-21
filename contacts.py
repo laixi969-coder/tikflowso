@@ -16,7 +16,7 @@ def init(db):
 def catalog(db,user,params):
     ws.signed_in(user)
     source,market=params.get("source","demo"),params.get("market","US")
-    ws.check_source(user,source)
+    ws.check_source(db,user,source)
     query=params.get("q","").strip().lower()
     sql="""SELECT c.*, (SELECT name FROM analytics_daily d WHERE d.source=c.source AND d.market=c.market
       AND d.id=c.id AND d.kind='creators' ORDER BY date DESC LIMIT 1) AS name
@@ -30,9 +30,13 @@ def mutate(db,user,data):
     ws.admin(user)
     source=ws.ident(data.get("source"),64)
     market=ws.ident(data.get("market"),5)
-    ws.check_source(user,source)
+    ws.check_source(db,user,source)
     owner=ws.workspace(user)
     if data.get("remove"):
+        import recycle
+        if not db.in_transaction: db.execute("BEGIN IMMEDIATE")
+        prior=db.execute("SELECT * FROM creator_contacts WHERE owner=? AND source=? AND market=? AND id=?",(owner,source,market,ws.ident(data.get("id"),160))).fetchone()
+        recycle.keep(db,owner,"contact",prior)
         db.execute("DELETE FROM creator_contacts WHERE owner=? AND source=? AND market=? AND id=?",(owner,source,market,ws.ident(data.get("id"),160)))
         return {"ok":True}
     rows=data.get("rows")

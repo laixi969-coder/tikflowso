@@ -4,23 +4,23 @@
   "images": {
     "en": [
       {
+        "original": "Green Tea",
         "box": [
           0.07799432257190268,
           0.25967590537727436,
           0.3815113544464111,
           0.11398152775234649
         ],
-        "original": "Green Tea",
         "translation": "绿茶"
       },
       {
-        "original": "No added sugar",
         "box": [
           0.07692933414300063,
           0.5618733813147156,
           0.4460467338562012,
           0.12063583797878685
         ],
+        "original": "No added sugar",
         "translation": "无添加糖"
       }
     ],

@@ -54,6 +54,22 @@ class WorkflowTests(unittest.TestCase):
     def client(self):
         return build_opener(HTTPCookieProcessor(CookieJar()))
 
+    def test_board_live_preview_filters_provider_measurements_to_reported_session(self):
+        owner=self.client()
+        self.call(owner,"/api/register",{"email":"liveboard@example.test","password":"stream-data-123","name":"Board"})
+        room={"market":"GB","kind":"lives","id":"event","name":"Fixture room","date":"2026-10-01","gmv":4,"sales":1,
+              "profile":{"live_session":{"start_at":"2026-10-01T11:00+01:00","end_at":"2026-10-01T11:30+01:00"}}}
+        source=self.call(owner,"/api/import",{"source":"events","filename":"rooms.json","rows":[room]})["source"]
+        with patch.dict(os.environ,{"TIKFLOWSO_STREAM_TOKEN":"local-fixture","TIKFLOWSO_STREAM_SOURCE":source}):
+            points=[{"market":"GB","kind":"lives","id":"event","metric":"online_viewers","time":time,"value":value}
+                    for time,value in [("2026-10-01T09:59Z",99),("2026-10-01T10:00Z",0),("2026-10-01T10:30Z",3),("2026-10-01T10:31Z",88)]]
+            self.call(owner,"/api/stream",{"points":points},headers={"Authorization":"Bearer local-fixture"})
+        path="/api/overview?live_only=1&market=GB&source="+source+"&date=2026-10-01&days=1"
+        preview=self.call(owner,path)["live_preview"]["room"]
+        self.assertEqual((preview["series_source"],preview["series_basis"],[p["value"] for p in preview["series"]]),("stream","session",[0,3]))
+        self.assertIsNone(preview["enter_count"])
+        self.call(self.client(),path,expected=403)
+
     def test_import_history_revision_and_monitor_lag(self):
         owner,other=self.client(),self.client()
         self.call(owner,"/api/register",{"email":"audit@example.test","password":"audit-file-123","name":"A"})

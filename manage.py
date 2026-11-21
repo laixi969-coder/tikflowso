@@ -95,16 +95,43 @@ def main():
     bundle=s.add_parser("backup-deployment",help="创建可迁移的数据库和后台配置备份目录")
     bundle.add_argument("--db",type=Path,required=True)
     bundle.add_argument("--out",type=Path,required=True)
+    bundle.add_argument("--cert",type=Path,help="恢复公钥证书")
     inspect=s.add_parser("verify-deployment",help="核对部署备份文件与数据完整性")
     inspect.add_argument("--dir",type=Path,required=True)
+    inspect.add_argument("--restore-key",type=Path)
     b=s.add_parser("backup")
     b.add_argument("--db",type=Path,required=True)
     b.add_argument("--out",type=Path,required=True)
+    b.add_argument("--cert",type=Path)
     v=s.add_parser("verify")
     v.add_argument("--db",type=Path,required=True)
     grant=s.add_parser("grant-admin",help="授予已注册账号平台管理权，用于交接和恢复")
     grant.add_argument("--db",type=Path,required=True)
     grant.add_argument("--email",required=True)
+    grant.add_argument("--proof-file",type=Path,required=True,help="该账户在账户页生成的十分钟交接凭证文件")
+    grant.add_argument("--out",type=Path,help="新绑定凭据的私有文件")
+    for action in ("recover-admin","issue-reset","revoke-sessions"):
+        command=s.add_parser(action)
+        command.add_argument("--db",type=Path,required=True)
+        command.add_argument("--email",required=True)
+        if action!="revoke-sessions": command.add_argument("--out",type=Path,required=True)
+    for name in ("erase-user","replay-erasures"):
+        cmd=s.add_parser(name)
+        cmd.add_argument("--db",type=Path,required=True)
+        cmd.add_argument("--journal",type=Path,required=True)
+        if name=="erase-user": cmd.add_argument("--email",required=True)
+    reconcile=s.add_parser("reconcile-commissions")
+    reconcile.add_argument("--db",type=Path,required=True)
+    reconcile.add_argument("--since",required=True,help="UTC YYYY-MM-DD")
+    reconcile.add_argument("--until",required=True,help="UTC YYYY-MM-DD, exclusive")
+    reconcile.add_argument("--apply",action="store_true",help="写入核实后的缺失分录，默认只报告")
+    acl=s.add_parser("source-access")
+    acl.add_argument("--db",type=Path,required=True)
+    acl.add_argument("--source",required=True)
+    select=acl.add_mutually_exclusive_group(required=True)
+    select.add_argument("--shared",action="store_true")
+    select.add_argument("--owner",type=int)
+    select.add_argument("--hold",action="store_true")
     show=s.add_parser("settlements")
     show.add_argument("--db",type=Path,required=True)
     show.add_argument("--id",type=int)
@@ -123,13 +150,51 @@ def main():
     d.add_argument("--reason",required=True)
     d.add_argument("action",choices=("open","reopen","won","lost"))
     args=p.parse_args()
-    if args.action=="grant-admin":
+    if args.action in ("erase-user","replay-erasures"):
+        import privacy
+        with closing(sqlite3.connect(args.db.resolve().as_uri()+"?mode=rw",uri=True)) as db,db:
+            db.execute("PRAGMA foreign_keys=ON")
+            if args.action=="erase-user": privacy.request(db,args.email,args.journal)
+            else: privacy.replay(db,args.journal)
+        print("注销记录已处理")
+        return
+    if args.action=="reconcile-commissions":
+        import reconciliation
+        print(json.dumps(reconciliation.run(args.db,args.since,args.until,args.apply),ensure_ascii=False,indent=2))
+        return
+    if args.action=="source-access":
+        import source_policy
+        with closing(sqlite3.connect(args.db.resolve().as_uri()+"?mode=rw",uri=True)) as db,db:
+            source_policy.set_access(db,args.source,args.owner,args.shared)
+        print("来源授权已更新")
+        return
+    if args.action in ("grant-admin","recover-admin","issue-reset","revoke-sessions"):
+        import account_security
         with closing(sqlite3.connect(args.db.resolve().as_uri()+"?mode=rw",uri=True)) as db,db:
             user=db.execute("SELECT id FROM users WHERE email=? AND password IS NOT NULL",(args.email.strip().lower(),)).fetchone()
             if not user:p.error("请先注册该账户")
-            db.execute("INSERT OR IGNORE INTO platform_admins(uid) VALUES(?)",user)
-        args.db.with_suffix(".admin-setup.txt").unlink(missing_ok=True)
-        print("已授予平台管理权限")
+            uid=user[0]
+            if args.action=="revoke-sessions":
+                db.execute("DELETE FROM sessions WHERE uid=?",user)
+                db.execute("DELETE FROM access_keys WHERE uid=?",user)
+            elif args.action=="issue-reset":
+                account_security.private_file(args.out,{"token":account_security.reset_token(db,uid),"valid_minutes":15})
+            else:
+                if args.action=="recover-admin" and not db.execute("SELECT 1 FROM platform_admins WHERE uid=?",user).fetchone():
+                    p.error("该账户未获平台管理权限")
+                if args.action=="grant-admin" and db.execute("SELECT 1 FROM platform_admins WHERE uid=?",user).fetchone():
+                    p.error("账户已绑定，请使用 recover-admin")
+                if args.action=="grant-admin":
+                    import time
+                    proof=args.proof_file.read_text().strip()
+                    if not db.execute("DELETE FROM admin_handoff WHERE uid=? AND digest=? AND expires>?",
+                                      (uid,account_security.digest(proof),int(time.time()))).rowcount:
+                        p.error("账户交接凭证无效或已过期")
+                db.execute("INSERT OR IGNORE INTO platform_admins(uid) VALUES(?)",user)
+                dest=args.out or args.db.parent/("admin-enrollment-"+str(uid)+".json")
+                account_security.private_file(dest,account_security.provision(db,uid))
+        if args.action=="grant-admin": args.db.with_suffix(".admin-setup.txt").unlink(missing_ok=True)
+        print("账户操作已完成")
         return
     if args.action=="settlements":
         with closing(sqlite3.connect(args.db.resolve().as_uri()+"?mode=ro",uri=True)) as db:
@@ -149,9 +214,17 @@ def main():
             else: settlement.dispute(db,args.mode,args.case,args.charge,args.amount,args.action,args.reason)
         print("已记录")
         return
-    if args.action=="backup": result=backup(args.db,args.out)
-    elif args.action=="backup-deployment":result=deployment_backup(args.db,args.out)
-    elif args.action=="verify-deployment":result=verify_deployment(args.dir)
+    if args.action in ("backup","backup-deployment"):
+        import backup_vault
+        cert=args.cert
+        if not cert:
+            import sys
+            cert,key=backup_vault.direct_credentials(args.db)
+            print("恢复私钥位置",key,file=sys.stderr)
+        result=backup_vault.seal(args.db,args.out,cert)
+    elif args.action=="verify-deployment":
+        import backup_vault
+        with backup_vault.unpack(args.dir,args.restore_key) as clear: result=verify_deployment(clear)
     else:
         with closing(sqlite3.connect(args.db.resolve().as_uri()+"?mode=ro",uri=True)) as db: result=verify(db)
     print(json.dumps(result,ensure_ascii=False))

@@ -26,6 +26,7 @@
           <button
             class="menu-btn iconbutton"
             id="menu-btn"
+            aria-controls="sidebar"
             aria-label="展开导航"
           ></button
           ><span class="crumb-root">工作空间</span
@@ -44,12 +45,13 @@
         <div id="app" aria-live="polite"></div>
       </main>
       <footer class="footer">
-        <span>tikflowso</span><span>TikTok Shop 数据工作台</span>
+        <span>tikflowso</span><nav id="resource-links" aria-label="资源中心"></nav>
       </footer>
     </div>
     <dialog id="search-dialog">
       <form id="global-search">
         <label for="query">全站搜索</label>
+        <div class="search-row" id="search-options"></div>
         <div class="search-row">
           <input
             id="query"

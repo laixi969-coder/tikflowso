@@ -1,7 +1,8 @@
 """tikflowso daily-snapshot analytics. All money inputs and outputs use local major units."""
 import argparse
 import csv
-from datetime import date, timedelta
+import heapq
+from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal, InvalidOperation
 import json
 import math
@@ -17,15 +18,21 @@ MARKETS = {
     "PH": ("菲律宾", "PHP"), "SG": ("新加坡", "SGD"), "MX": ("墨西哥", "MXN"),
     "BR": ("巴西", "BRL"), "ES": ("西班牙", "EUR"), "FR": ("法国", "EUR"),
     "DE": ("德国", "EUR"), "IT": ("意大利", "EUR"), "JP": ("日本", "JPY"),
-    "IE": ("爱尔兰", "EUR"),
+    "IE": ("爱尔兰", "EUR"), "CN": ("中国大陆", "CNY"),
 }
 DEMO_END = date(2026, 11, 19)
 DEMO_DAYS = 75
 SORTS = {"gmv", "sales", "views", "followers", "growth", "follower_growth"}
+RANGE_METRICS = {"gmv": KINDS, "sales": KINDS, "price": ("products",),
+                 "followers": ("creators",), "views": ("creators","videos","lives")}
+RANGE_KEYS = tuple(f"{edge}_{metric}" for metric in RANGE_METRICS for edge in ("min","max"))
+RANKING_KEYS = ("market","source","date","days","kind","category","segment","q","match","sort",*RANGE_KEYS)
 TEXT_FIELDS = ("name", "subtitle", "category", "segment", "tag", "music",
                "keyword", "script", "shop_id", "creator_id", "product_id", "image_key")
 
-SCHEMA = """
+import source_policy
+
+SCHEMA = source_policy.SCHEMA + """
 CREATE TABLE IF NOT EXISTS analytics_sources(
   id TEXT PRIMARY KEY, name TEXT NOT NULL
 );
@@ -98,7 +105,7 @@ def profile_json(raw, kind):
     if not isinstance(raw,dict):
         raise ValueError("profile 须为对象")
     allowed = {"products":{"reviews"}, "creators":{"audience","milestones"},
-               "lives":{"live_traffic"}}.get(kind,set())
+               "lives":{"live_traffic","live_products","live_session"}}.get(kind,set())
     if not set(raw) <= allowed:
         raise ValueError("profile 包含与对象类型不匹配的字段")
     def text(value):
@@ -146,6 +153,48 @@ def profile_json(raw, kind):
         if "sources" in block:
             traffic["sources"] = share_list(block["sources"])
         out["live_traffic"] = traffic
+    def product_links(records):
+        linked = {}
+        for entry in entries(records):
+            product = text(entry.get("id"))
+            if len(product)>160 or product in linked:
+                raise ValueError("同一直播日快照的商品 ID 须唯一，长度不超过 160")
+            sales = numeric(entry.get("sales"),"live_products.sales")
+            cents = numeric(entry.get("gmv"),"live_products.gmv",money=True)
+            linked[product] = {"id":product,"sales":sales,"gmv":None if cents is None else cents/100}
+        return list(linked.values())
+    if "live_products" in raw:
+        out["live_products"] = product_links(raw["live_products"])
+    if "live_session" in raw:
+        block = raw["live_session"]
+        if not isinstance(block,dict) or set(block)-{"start_at","end_at","enter_count","gmv","products","online_viewers"}:
+            raise ValueError("live_session 包含无效的场次字段")
+        block = {key:value for key,value in block.items() if value is not None}
+        def timestamp(value):
+            if not isinstance(value,str) or not re.fullmatch(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2}(?:\.\d{1,6})?)?(?:Z|[+-]\d{2}:\d{2})",value):
+                raise ValueError("直播时刻须使用带时区的 ISO 8601 时间")
+            try:
+                return datetime.fromisoformat(value.replace("Z","+00:00")).astimezone(timezone.utc).isoformat(timespec="microseconds")
+            except (ValueError,OverflowError):
+                raise ValueError("直播时刻无效") from None
+        session = {key:timestamp(block[key]) for key in ("start_at","end_at") if key in block}
+        if session.get("start_at","") > session.get("end_at","~"):
+            raise ValueError("直播结束时刻不能早于开始时刻")
+        if "enter_count" in block:
+            session["enter_count"] = numeric(block["enter_count"],"enter_count",required=True)
+        if "gmv" in block:
+            session["gmv"] = numeric(block["gmv"],"live_session.gmv",required=True,money=True)/100
+        if "products" in block:
+            session["products"] = product_links(block["products"])
+        if "online_viewers" in block:
+            counts = {}
+            for point in entries(block["online_viewers"]):
+                when = timestamp(point.get("time"))
+                if when in counts or not session.get("start_at","") <= when <= session.get("end_at","~"):
+                    raise ValueError("在线人数时点重复或超出场次范围")
+                counts[when] = numeric(point.get("value"),"online_viewers",required=True)
+            session["online_viewers"] = [{"time":when,"value":counts[when]} for when in sorted(counts)]
+        out["live_session"] = session
     return json.dumps(out,ensure_ascii=False,separators=(",",":")) if out else None
 
 
@@ -188,11 +237,12 @@ def normalized(row, source):
     return source, market, kind, ident, iso_day(row.get("date")).isoformat(), *values, profile_json(row.get("profile"),kind), *numbers
 
 
-def write_batch(db, records, source, label):
+def write_batch(db, records, source, label, *, owner=None, shared=False):
     dates = []
     identities = set()
     db.execute("SAVEPOINT analytics_batch")
     try:
+        source_policy.register(db,source,owner,shared)
         db.execute("INSERT OR IGNORE INTO analytics_sources VALUES (?,?)", (source, label))
         for n, row in enumerate(records, 1):
             try:
@@ -216,10 +266,10 @@ def write_batch(db, records, source, label):
             "first_date": min(dates), "date": max(dates)}
 
 
-def import_rows(db, rows, source):
+def import_rows(db, rows, source, *, owner=None, shared=False):
     if not isinstance(source, str) or not re.fullmatch(r"[A-Za-z0-9_-]{1,64}", source) or source.lower() == "demo":
         raise ValueError("来源使用 1–64 位字母、数字、短横线或下划线；demo 为保留名称")
-    return write_batch(db, rows, source, source)
+    return write_batch(db, rows, source, source, owner=owner, shared=shared)
 
 
 def daily_from_counters(rows):
@@ -288,11 +338,54 @@ CREATORS = ["Maya Chen", "Leo Brooks", "Sophia Reed", "Ava Park", "Noah Ellis",
 TAGS = ["#DailyFinds", "#DeskSetup", "#OnTheGo", "#SmallSpace", "#StyleNotes", "#GetReadyWithMe"]
 MUSIC = ["Sunday Window", "Morning Loop", "Daylight Edit", "Quiet Bloom"]
 HOOKS = ["真实体验", "场景对比", "开箱试用", "使用教程"]
+CN_PRODUCTS = [
+    ("山茶保湿精华液", "serum", "美妆个护", 89),
+    ("通勤无线耳机", "headphones", "数码电子", 139),
+    ("轻量随行保温杯", "bottle", "运动户外", 69.9),
+    ("暖光阅读台灯", "lamp", "家居生活", 79),
+    ("棉麻单肩包", "bag", "服饰配件", 49.9),
+    ("方格手账本", "planner", "文具办公", 19.9),
+    ("桂花润唇油", "lip", "美妆个护", 35.9),
+    ("折叠手机支架", "stand", "数码电子", 29.9),
+    ("居家拉伸弹力带", "fitness", "运动户外", 39.9),
+    ("白瓷马克杯", "cup", "家居生活", 45),
+    ("帆布通勤托特包", "bag", "服饰配件", 59),
+    ("周计划便签本", "planner", "文具办公", 12.9),
+]
+CN_SHOPS = ["花间个护铺", "九点数码铺", "远山运动馆", "微光生活馆", "青禾布艺铺", "拾页文具社"]
+CN_CREATORS = ["小禾试好物", "阿川的桌面", "周末去走走", "阿棠住小家", "小岚的衣橱", "纸间慢慢写"]
+CN_TAGS = ["#日常护肤", "#桌面好物", "#周末去户外", "#小家布置", "#通勤穿搭", "#手账日常"]
+CN_MUSIC = ["窗边晴天", "街角慢拍", "午后的风", "晚灯小调"]
 
 
-def demo_rows():
+def demo_live_fields(stamp, index, sales, cents, views, product_count):
+    # Each fixture room has one reported session per day, independent of the period ranking.
+    begin = datetime.fromisoformat(stamp).replace(hour=9+index%8,minute=index%20,tzinfo=timezone.utc)
+    peak = round(views*.18)
+    units = [sales-sales//4-sales//8,sales//4,sales//8]
+    products = []
+    remaining = cents
+    for n, count in enumerate(units):
+        amount = round(cents*count/sales) if sales and n<2 else remaining
+        remaining -= amount
+        products.append({"id":f"p{(index+n)%product_count+1:02}","sales":count,"gmv":amount/100})
+    times = [(begin+timedelta(minutes=n*15)).isoformat(timespec="microseconds") for n in range(5)]
+    session = {"start_at":times[0],"end_at":times[-1],"enter_count":peak*3+sales,"gmv":cents/100,
+               "products":products,"online_viewers":[{"time":when,"value":round(peak*ratio)}
+                   for when,ratio in zip(times,(.15,.6,1,.7,.22))]}
+    return {"live_session":session,"live_products":products}
+
+
+def demo_rows(only_market=None):
     start = DEMO_END - timedelta(days=DEMO_DAYS - 1)
-    for market_index, (market, multiplier) in enumerate([("US", 1), ("GB", .8), ("ID", 15700), ("MY", 4.4)]):
+    # Existing market positions determine their historical sample volumes. CN prices are already in yuan.
+    for market_index, (market, multiplier) in enumerate([("US", 1), ("GB", .8), ("ID", 15700), ("MY", 4.4), ("CN", 1)]):
+        if only_market is not None and market != only_market:
+            continue
+        if market == "CN":
+            products, shops, creators, tags, music = CN_PRODUCTS, CN_SHOPS, CN_CREATORS, CN_TAGS, CN_MUSIC
+        else:
+            products, shops, creators, tags, music = PRODUCTS, SHOPS, CREATORS, TAGS, MUSIC
         for day in range(DEMO_DAYS):
             stamp = (start + timedelta(days=day)).isoformat()
             base = {"market": market, "date": stamp}
@@ -301,8 +394,8 @@ def demo_rows():
                 bucket = totals.setdefault((kind, index), [0, 0, 0])
                 for k, amount in enumerate((sales, cents, views)):
                     bucket[k] += amount
-            for i, (name, image, category, base_price) in enumerate(PRODUCTS):
-                shop, creator = i % len(SHOPS), i % len(CREATORS)
+            for i, (name, image, category, base_price) in enumerate(products):
+                shop, creator = i % len(shops), i % len(creators)
                 cents = round(base_price * multiplier * 100)
                 wave = 1 + .21 * math.sin(day * .29 + i * .75) + .13 * math.cos(day * .71 + i)
                 sales = round((350 - i * 13) * wave * (1 + day * (.004 + i % 4 * .003)) *
@@ -315,20 +408,21 @@ def demo_rows():
                           "shop_id": f"s{shop+1:02}", "creator_id": f"c{creator+1:02}",
                           "product_id": f"p{i+1:02}"}
                 yield {**common, "id": common["product_id"], "kind": "products", "name": name,
-                       "subtitle": SHOPS[shop], "price": cents / 100,
+                       "subtitle": shops[shop], "price": cents / 100,
                        "segment": "new" if i % 4 == 3 else "promoted", "sales": sales,
                        "gmv": sales * cents / 100,
                        "profile":{"reviews":[{"text":"包装完好，实际使用效果符合预期。","rating":4+i%2,"date":stamp}]}}
                 yield {**common, "id": f"v{i+1:02}", "kind": "videos",
-                       "name": f"{name.split()[0]} · {HOOKS[i%4]}", "subtitle": CREATORS[creator],
+                       "name": f"{name.split()[0]} · {HOOKS[i%4]}", "subtitle": creators[creator],
                        "segment": "image" if i % 4 == 2 else "video", "sales": video_sales,
-                       "views": views, "gmv": video_sales * cents / 100, "tag": TAGS[i%len(TAGS)],
-                       "music": MUSIC[i%len(MUSIC)], "keyword": image, "script": HOOKS[i%4]}
+                       "views": views, "gmv": video_sales * cents / 100, "tag": tags[i%len(tags)],
+                       "music": music[i%len(music)], "keyword": name if market == "CN" else image, "script": HOOKS[i%4]}
                 yield {**common, "id": f"l{i+1:02}", "kind": "lives",
-                       "name": f"{SHOPS[shop]} · 直播选物", "subtitle": CREATORS[creator],
+                       "name": f"{shops[shop]} · 直播选物", "subtitle": creators[creator],
                        "segment": "replay" if i % 3 else "live", "sales": live_sales,
                        "views": live_views, "gmv": live_sales * cents / 100,
-                       "profile":{"live_traffic":{"peak_viewers":round(live_views*.18),"avg_watch_seconds":42+i,
+                       "profile":{**demo_live_fields(stamp,i,live_sales,live_sales*cents,live_views,len(products)),
+                               "live_traffic":{"peak_viewers":round(live_views*.18),"avg_watch_seconds":42+i,
                                "sources":[{"name":"推荐","share":70},{"name":"关注","share":30}]}}}
                 add("shops", shop, sales, sales*cents, views+live_views)
                 add("creators", creator, video_sales+live_sales, (video_sales+live_sales)*cents, views+live_views)
@@ -336,8 +430,8 @@ def demo_rows():
                 creator = kind == "creators"
                 delta = (640 + i * 87 + market_index * 40)
                 yield {**base, "kind": kind, "id": ("c" if creator else "s")+f"{i+1:02}",
-                       "name": (CREATORS if creator else SHOPS)[i], "category": PRODUCTS[i][2],
-                       "subtitle": ("@" + CREATORS[i].lower().replace(" ", "")) if creator else MARKETS[market][0],
+                       "name": (creators if creator else shops)[i], "category": products[i][2],
+                       "subtitle": ("@" + creators[i].lower().replace(" ", "")) if creator else MARKETS[market][0],
                        "segment": ("rising" if i%3==0 else "established") if creator else ("local","crossborder","s")[i%3],
                        "sales": sales, "gmv": gmv / 100, "views": views,
                        "followers": (39500 + i*11733 + day*delta) if creator else None,
@@ -350,6 +444,7 @@ def demo_rows():
 def init(db):
     db.row_factory = sqlite3.Row
     db.executescript(SCHEMA)
+    source_policy.migrate(db)
     existing={r[1] for r in db.execute("PRAGMA table_info(analytics_daily)")}
     for column in ("orders","refund_units","gmv_estimated"):
         if column not in existing:
@@ -363,6 +458,33 @@ def init(db):
             write_batch(db, demo_rows(), "demo", "演示数据")
     if not db.execute("SELECT 1 FROM analytics_sources WHERE id='demo'").fetchone():
         write_batch(db, demo_rows(), "demo", "演示数据")
+    else:
+        if not db.execute("SELECT 1 FROM analytics_entities WHERE source='demo' AND market='CN' LIMIT 1").fetchone():
+            write_batch(db, demo_rows("CN"), "demo", "演示数据")
+        # Add fixture-only fields to older installations. Operator imports and their audit history are untouched.
+        old = db.execute("""SELECT market,id,date,sales,gmv_units,views,profile_json FROM analytics_daily
+            WHERE source='demo' AND kind='lives' AND json_type(profile_json,'$.live_session') IS NULL""")
+        updates = []
+        for market, identifier, day, sales, cents, views, raw in old:
+            product_count = len(CN_PRODUCTS if market == "CN" else PRODUCTS)
+            if not re.fullmatch(r"l\d{2}",identifier) or not 1 <= int(identifier[1:]) <= product_count or views is None:
+                continue
+            profile = json.loads(raw) if raw else {}
+            profile.update(demo_live_fields(day,int(identifier[1:])-1,sales,cents,views,product_count))
+            updates.append((json.dumps(profile,ensure_ascii=False,separators=(",",":")),market,identifier,day))
+        if updates:
+            db.execute("SAVEPOINT refresh_demo_sessions")
+            try:
+                trigger = db.execute("SELECT sql FROM sqlite_master WHERE type='trigger' AND name='audit_snapshot_update'").fetchone()
+                if trigger: db.execute("DROP TRIGGER audit_snapshot_update")
+                db.executemany("""UPDATE analytics_daily SET profile_json=? WHERE source='demo' AND kind='lives'
+                    AND market=? AND id=? AND date=?""",updates)
+                if trigger: db.execute(trigger[0])
+            except BaseException:
+                db.execute("ROLLBACK TO refresh_demo_sessions")
+                raise
+            finally:
+                db.execute("RELEASE refresh_demo_sessions")
     fields=COLUMNS[5:]
     changed=" OR ".join(f"OLD.{c} IS NOT NEW.{c}" for c in fields)
     def snapshot(prefix):
@@ -408,12 +530,16 @@ def meta(db, s):
                for (code,) in db.execute("SELECT DISTINCT market FROM analytics_entities WHERE source=? ORDER BY market",
                                           (s["source"],))]
     markets.sort(key=lambda m:(m["code"] != "US", m["code"]))
-    categories = [r[0] for r in db.execute(
-        "SELECT DISTINCT category FROM analytics_daily WHERE source=:source AND market=:market AND category!='' ORDER BY category",s)]
+    categories_by_kind = {kind: [] for kind in KINDS}
+    for kind,category in db.execute("""SELECT DISTINCT kind,category FROM analytics_daily
+            WHERE source=:source AND market=:market AND category!='' ORDER BY category""",s):
+        categories_by_kind[kind].append(category)
+    categories = sorted({label for labels in categories_by_kind.values() for label in labels})
     sources = [dict(r) for r in db.execute("SELECT * FROM analytics_sources ORDER BY id != 'demo',id")]
     estimated=db.execute("""SELECT 1 FROM analytics_daily WHERE source=:source AND market=:market AND
                             date BETWEEN :start_date AND :date AND gmv_estimated=1 LIMIT 1""",s).fetchone()
-    return {**s, "markets":markets, "categories":categories, "sources":sources,"includes_estimates":bool(estimated)}
+    return {**s, "markets":markets, "categories":categories, "categories_by_kind":categories_by_kind,
+            "sources":sources,"includes_estimates":bool(estimated)}
 
 
 def period_growth(current, previous):
@@ -495,32 +621,83 @@ def ranking_filter(kind, params):
             return (row["growth"] is not None and row["growth"] >= 15 and row["sales"] >= 20
                     and row["followers"] is not None and row["followers"] < 200000)
         return not segment or row["segment"] == segment
+    ranges = []
+    for field, kinds in RANGE_METRICS.items():
+        limits = []
+        for edge in ("min", "max"):
+            key = f"{edge}_{field}"
+            minor_units = field in ("gmv", "price")
+            value = numeric(params.get(key), key, money=minor_units)
+            limits.append(value / 100 if value is not None and minor_units else value)
+        low, high = limits
+        if low is None and high is None:
+            continue
+        if kind not in kinds:
+            raise ValueError(f"{kind} 不支持 {field} 区间")
+        if low is not None and high is not None and low > high:
+            raise ValueError(f"{field} 的下限超过上限")
+        ranges.append((field,low,high))
+    category = params.get("category") or ""
     def accepts(row):
         return (row["kind"] == kind and matches(row) and in_segment(row)
-                and (not params.get("category") or row["category"] == params["category"]))
+                and (not category or row["category"] == category or (row["category"] or "").startswith(category+" > "))
+                and all(row[k] is not None and (lo is None or row[k]>=lo) and (hi is None or row[k]<=hi)
+                        for k,lo,hi in ranges))
     return sort, accepts
 
 
-def leaderboard(rows, kind, params):
+def ranking_page(db, scope, params):
+    page=int_param(params,"page",1,10**9)
+    limit=int_param(params,"limit",20,1000)
+    start=(page-1)*limit
+    metric,accepts=ranking_filter(params.get("kind","products"),params)
+    total=0
+    def matches():
+        nonlocal total
+        for row in iter_rows(db,scope):
+            if accepts(row):
+                total+=1
+                yield row
+    if start+limit<=2000:
+        top=heapq.nsmallest(start+limit,matches(),key=lambda r:(r[metric] is None,-(r[metric] or 0),r["id"]))
+        selected=top[start:]
+    else:
+        # Deep pages use a connection-private disk sort. This never writes to the main database.
+        db.execute("CREATE TEMP TABLE IF NOT EXISTS page_sort(value NUMERIC,id TEXT,record TEXT)")
+        db.execute("DELETE FROM temp.page_sort")
+        db.executemany("INSERT INTO temp.page_sort VALUES(?,?,?)",((r[metric],r["id"],json.dumps(r,ensure_ascii=False)) for r in matches()))
+        selected=[json.loads(r[0]) for r in db.execute("SELECT record FROM temp.page_sort ORDER BY value IS NULL,value DESC,id LIMIT ? OFFSET ?",(limit,start))]
+    return {**scope,"items":[{**r,"rank":start+i} for i,r in enumerate(selected,1)],"total":total,"page":page,"limit":limit}
+
+
+def leaderboard(rows, kind, params, *, limit=None):
     sort, accepts = ranking_filter(kind, params)
-    selected = [row for row in rows if accepts(row)]
-    selected.sort(key=lambda r:(r[sort] is None, -(r[sort] or 0), r["id"]))
+    matches = (row for row in rows if accepts(row))
+    def order(row):
+        return row[sort] is None, -(row[sort] or 0), row["id"]
+    selected = sorted(matches,key=order) if limit is None else heapq.nsmallest(limit,matches,key=order)
     return [{**row, "rank":i} for i,row in enumerate(selected,1)]
 
 
 def daily_trend(db, s, item=None):
     if item:
-        mode = """SELECT date,SUM(gmv_units) AS g,SUM(sales) AS s,SUM(views) AS v FROM analytics_daily
+        rows = db.execute("""SELECT date,gmv_units,sales,views,price_units FROM analytics_daily
                   WHERE source=:source AND market=:market AND date BETWEEN :start_date AND :date
-                    AND kind=:kind AND id=:id GROUP BY date ORDER BY date"""
-        args = {**s, "kind":item["kind"], "id":item["id"]}
+                    AND kind=:kind AND id=:id ORDER BY date""",{**s,"kind":item["kind"],"id":item["id"]})
+        points = []
+        for stamp,gmv,sales,views,price in rows:
+            point = {"date":stamp,"gmv":gmv/100,"sales":sales,"views":views}
+            if item["kind"]=="products": point["price"]=None if price is None else price/100
+            points.append(point)
+        return points
     else:
         mode = """SELECT date,SUM(CASE WHEN kind='products' THEN gmv_units END) AS g,
                   SUM(CASE WHEN kind='products' THEN sales END) AS s,
                   SUM(CASE WHEN kind IN ('videos','lives') THEN views END) AS v
                   FROM analytics_daily WHERE source=:source AND market=:market
-                    AND date BETWEEN :start_date AND :date GROUP BY date ORDER BY date"""
-        args = s
+                    AND date BETWEEN :start_date AND :date AND (:category='' OR category=:category)
+                  GROUP BY date ORDER BY date"""
+        args = {"category":"",**s}
     return [{"date":stamp, "gmv":g/100 if g is not None else None, "sales":sales, "views":views}
             for stamp,g,sales,views in db.execute(mode,args)]
 
@@ -533,13 +710,19 @@ def overview_period(db, args):
                COUNT(DISTINCT CASE WHEN kind='creators' THEN id END),
                COUNT(DISTINCT CASE WHEN kind='products' THEN date END),
                COUNT(DISTINCT CASE WHEN kind IN ('videos','lives') AND views IS NOT NULL THEN date END),
-               COUNT(DISTINCT CASE WHEN kind='creators' THEN date END)
+               COUNT(DISTINCT CASE WHEN kind='creators' THEN date END),
+               COUNT(DISTINCT CASE WHEN kind='products' AND sales>0 THEN id END),
+               COUNT(DISTINCT CASE WHEN kind='shops' AND sales>0 THEN id END),
+               COUNT(DISTINCT CASE WHEN kind='shops' THEN date END)
         FROM analytics_daily WHERE source=:source AND market=:market AND date BETWEEN :start_date AND :date
+          AND (:category='' OR category=:category)
     """,args).fetchone()
-    gmv,sales,views,creators,pdays,vdays,cdays = result
+    gmv,sales,views,creators,pdays,vdays,cdays,active_products,active_shops,sdays = result
     return ({"gmv":None if gmv is None else gmv/100,"sales":sales,"views":views,
              "creators":creators if cdays else None},
-            {"gmv":pdays,"sales":pdays,"views":vdays,"creators":cdays})
+            {"gmv":pdays,"sales":pdays,"views":vdays,"creators":cdays},
+            {"active_products":active_products if pdays else None, "active_shops":active_shops if sdays else None,
+             "avg_price":round(gmv / 100 / sales, 2) if sales else None})
 
 
 def groups_for(db, s, group, include_examples=False):
@@ -628,6 +811,71 @@ def related_to(target, rows):
     return sorted(result,key=lambda r:(KINDS.index(r["kind"]),-r["gmv"],r["id"]))
 
 
+def live_analysis(db, scope, item, rows, ranking):
+    products = {r["id"]:r for r in rows if r["kind"]=="products"}
+    attributed = {}
+    snapshots = db.execute("""SELECT date,product_id,profile_json FROM analytics_daily
+        WHERE source=:source AND market=:market AND kind='lives' AND id=:id
+          AND date BETWEEN :start_date AND :date ORDER BY date""", {**scope,"id":item["id"]})
+    for day, product_id, raw in snapshots:
+        profile = json.loads(raw) if raw else {}
+        links = {p["id"]:p for p in profile.get("live_products",())}
+        if product_id:
+            links.setdefault(product_id,{})
+        for identifier, metrics in links.items():
+            entry = attributed.setdefault(identifier, {
+                "id":identifier, "name":products[identifier]["name"] if identifier in products else None,
+                "first_seen":day,"last_seen":day,"days":0,"sales":0,"gmv":Decimal(0)})
+            entry["days"] += 1
+            entry["last_seen"] = day
+            for key in ("sales","gmv"):
+                value = metrics.get(key)
+                if value is None:
+                    entry[key] = None
+                elif entry[key] is not None:
+                    entry[key] += Decimal(str(value)) if key=="gmv" else value
+    for entry in attributed.values():
+        if entry["gmv"] is not None:
+            entry["gmv"] = float(entry["gmv"])
+    similar = [r for r in ranking if r["id"]!=item["id"] and item["category"] and r["category"]==item["category"]][:5]
+    return {"products":list(attributed.values()),"similar":similar}
+
+
+def board_live(db, scope, rows, top, requested):
+    if not top:
+        return {"rooms":[],"room":None}
+    catalog = {(r["kind"],r["id"]):r for r in rows}
+    rooms, snapshots = [], {}
+    for row in top:
+        raw = db.execute("""SELECT profile_json FROM analytics_daily WHERE source=:source AND market=:market
+            AND kind='lives' AND id=:id AND date=:updated_at""",{**scope,**row}).fetchone()[0]
+        snapshots[row["id"]] = json.loads(raw) if raw else {}
+        session = snapshots[row["id"]].get("live_session",{})
+        rooms.append({"id":row["id"],"name":row["name"],"rank":row["rank"],"period_gmv":row["gmv"],
+                      "period_estimated":bool(row["gmv_estimated"]),
+                      "session_gmv":session.get("gmv"),"enter_count":session.get("enter_count")})
+    identifier = requested if requested in snapshots else rooms[0]["id"]
+    room = catalog["lives",identifier]
+    profile = snapshots[identifier]
+    session = profile.get("live_session",{})
+    products = []
+    for p in sorted((p for p in session.get("products",()) if p["sales"] is not None),
+                    key=lambda p:(-p["sales"],p["id"]))[:3]:
+        product = catalog.get(("products",p["id"]),{})
+        products.append({**p,"name":product.get("name")})
+    similar = leaderboard((r for r in rows if r["id"]!=identifier and room["category"] and r["category"]==room["category"]),
+                          "lives",{},limit=5)
+    daily_ids = dict.fromkeys([room["product_id"],*(p["id"] for p in profile.get("live_products",()))])
+    daily_links = [{"id":p,"name":catalog.get(("products",p),{}).get("name")} for p in daily_ids if p]
+    creator_id = room["creator_id"]
+    return {"rooms":rooms,"room":{"id":identifier,"name":room["name"],"category":room["category"],
+             "day":room["updated_at"],"creator":{"id":creator_id,"name":catalog.get(("creators",creator_id),{}).get("name")} if creator_id else None,
+             "start_at":session.get("start_at"),"end_at":session.get("end_at"),"gmv":session.get("gmv"),
+             "enter_count":session.get("enter_count"),"products":products,"daily_links":daily_links,
+             "similar":[{"id":r["id"],"name":r["name"]} for r in similar],
+             "series":session.get("online_viewers",[]),"series_basis":"session","series_source":"snapshot"}}
+
+
 def exchange_rates(end):
     """Rates express base-currency units per local currency unit on the exact requested day."""
     path = os.environ.get("TIKFLOWSO_FX_RATES")
@@ -706,16 +954,34 @@ def handle(db, path, params):
         group = params.get("group") or "category"
         extra = market_structure(rows_for(db,scope)) if group=="category" else {}
         return {**scope,"group":group,"items":groups_for(db,scope,group,include_examples=True),**extra}
+    if path=="/api/rankings": return ranking_page(db,scope,params)
     rows = rows_for(db,scope)
     if path == "/api/overview":
-        rankings = {kind:leaderboard(rows,kind,{})[:5] for kind in KINDS}
-        metrics, covered = overview_period(db,scope)
-        previous, previous_coverage = overview_period(db,{**scope,"start_date":scope["prev_date"],
+        if params.get("live_only")=="1":
+            return {**scope,"live_preview":board_live(db,scope,rows,leaderboard(rows,"lives",{},limit=5),params.get("room"))}
+        rankings = {kind:leaderboard(rows,kind,{},limit=5) for kind in KINDS}
+        category_scope = {**scope,"category":params.get("category") or ""}
+        metrics, covered, activity = overview_period(db,category_scope)
+        previous, previous_coverage, _ = overview_period(db,{**category_scope,"start_date":scope["prev_date"],
                                           "date":(iso_day(scope["start_date"])-timedelta(days=1)).isoformat()})
         changes = {k: period_growth(v,previous[k]) if covered[k]==previous_coverage[k]==scope["days"] else None
                    for k,v in metrics.items()}
-        return {**scope,"metrics":metrics,"changes":changes,"coverage":covered,"trend":daily_trend(db,scope),
-                "rankings":rankings,"categories":groups_for(db,scope,"category")}
+        result = {**category_scope,"metrics":metrics,"changes":changes,"coverage":covered,"activity":activity,
+                  "trend":daily_trend(db,category_scope),"rankings":rankings,"categories":groups_for(db,scope,"category")}
+        if params.get("board") == "1":
+            result["live_preview"] = board_live(db,scope,rows,rankings["lives"],params.get("room"))
+            boards = [
+                ("热销商品","products","sales",""), ("本地热销店铺","shops","sales","local"),
+                ("带货达人","creators","sales",""), ("涨粉达人","creators","follower_growth",""),
+                ("带货视频","videos","sales",""), ("直播成交榜","lives","gmv","")
+            ]
+            result["boards"] = []
+            for title,kind,sort,segment in boards:
+                filters = {"sort":sort,"segment":segment}
+                top = rankings[kind] if sort=="gmv" and not segment else leaderboard(rows,kind,filters,limit=5)
+                result["boards"].append({"title":title,"kind":kind,**filters,
+                                         "items":[r for r in top if r[sort] is not None]})
+        return result
     kind = params.get("kind") or "products"
     if path == "/api/detail":
         ranking = leaderboard(rows,kind,{})
@@ -728,12 +994,11 @@ def handle(db, path, params):
         if "reviews" in item["profile"]:
             from insights import sentiment
             item["review_sentiment"]=sentiment(item["profile"]["reviews"])
-        return {**scope,"item":item,"trend":daily_trend(db,scope,item),"related":related_to(item,rows)}
-    ranking = leaderboard(rows,kind,params)
-    page = int_param(params,"page",1,10**9)
-    limit = int_param(params,"limit",20,1000)
-    start = (page-1)*limit
-    return {**scope,"items":ranking[start:start+limit],"total":len(ranking),"page":page,"limit":limit}
+        result = {**scope,"item":item,"trend":daily_trend(db,scope,item),"related":related_to(item,rows)}
+        if kind=="lives":
+            result["live_analysis"] = live_analysis(db,scope,item,rows,ranking)
+        return result
+    raise LookupError("未知排行接口")
 
 
 def main():
@@ -743,9 +1008,19 @@ def main():
     parser.add_argument("file", type=Path)
     parser.add_argument("--source",required=True,help="数据源稳定标识，demo 保留")
     parser.add_argument("--db",required=True,type=Path,help="tikflowso SQLite 文件")
+    visibility = parser.add_mutually_exclusive_group()
+    visibility.add_argument("--owner",type=int,help="可查阅数据的工作区所有者 ID")
+    visibility.add_argument("--shared",action="store_true",help="明确公开给全部工作区及访客")
     args = parser.parse_args()
     try:
-        with sqlite3.connect(args.db) as db, args.file.open(encoding="utf-8-sig",newline="") as stream:
+        from io import StringIO
+        if args.file.stat().st_size>64*1024*1024: raise ValueError("单个文件超过 64 MiB，请分批导入")
+        payload=args.file.read_bytes()
+        try: text=payload.decode("utf-8-sig")
+        except UnicodeDecodeError:
+            if args.file.suffix.lower()!=".csv": raise
+            text=payload.decode("gb18030")
+        with sqlite3.connect(args.db) as db, StringIO(text,newline="") as stream:
             init(db)
             if args.file.suffix.lower() == ".csv":
                 records = csv.DictReader(stream)
@@ -755,7 +1030,7 @@ def main():
                     raise ValueError("JSON 须为记录数组")
             else:
                 raise ValueError("文件类型须为 CSV 或 JSON")
-            print(json.dumps(import_rows(db,records,args.source),ensure_ascii=False))
+            print(json.dumps(import_rows(db,records,args.source,owner=args.owner,shared=args.shared),ensure_ascii=False))
     except (ValueError,OSError,sqlite3.Error,csv.Error) as error:
         parser.exit(1,f"导入失败：{error}\n")
 

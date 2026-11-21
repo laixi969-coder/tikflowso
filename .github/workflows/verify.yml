@@ -1,0 +1,25 @@
+name: Verify
+on:
+  push:
+  pull_request:
+  schedule:
+    - cron: "17 4 * * 1"
+permissions:
+  contents: read
+jobs:
+  candidate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: docker build -t tikflowso-verify .
+      - run: python3 -c "import deploy; deploy.verify_candidate('tikflowso-verify')"
+  dependencies:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - run: python -m pip install pip-audit
+      - run: python -m pip_audit -r requirements.lock --require-hashes --no-deps --disable-pip
+

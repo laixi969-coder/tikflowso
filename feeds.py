@@ -3,8 +3,8 @@
 Set TIKFLOWSO_FEEDS to a UTF-8 JSON config path, or run with --config. The
 file is an array of feeds. Each feed requires id, source, and either directory
 or an HTTPS url. An optional token_env names the bearer-token environment
-variable. A ws-<owner-id>-<name> source is private to that workspace; any
-other identifier is a shared operator-managed feed. Only enable licensed sources.
+variable. Set owner to bind a source to one workspace, or shared=true to publish it.
+Unclassified feeds are held. Only enable licensed sources.
 """
 import argparse
 import csv
@@ -46,6 +46,7 @@ def valid_config(raw):
         for name in ("id", "source"):
             if not isinstance(item.get(name),str) or not re.fullmatch(r"[A-Za-z0-9_-]{1,64}",item[name]):
                 raise ValueError(f"feed {name} 须为 1–64 个英数、短横线或下划线")
+        analytics.source_policy.intent(item["source"],item.get("owner"),item.get("shared",False))
         if item["id"] in seen or item["source"].lower() == "demo":
             raise ValueError("feed id 不可重复，demo 来源保留")
         seen.add(item["id"])
@@ -100,6 +101,8 @@ def update_contracts(db,specs,moment):
     active={(s["id"],s["source"],m):(d["due_utc"],d["lag_days"])
             for s in specs if (d:=s.get("daily_delivery")) for m in d["markets"]}
     with db:
+        for spec in specs:
+            analytics.source_policy.register(db,spec["source"],spec.get("owner"),spec.get("shared",False))
         for row in db.execute("SELECT feed,source,market FROM feed_contracts").fetchall():
             if tuple(row) not in active:
                 db.execute("DELETE FROM feed_contracts WHERE feed=? AND source=? AND market=?",tuple(row))
@@ -112,8 +115,8 @@ def update_contracts(db,specs,moment):
 def delivery_health(db,owner,moment=None):
     now=datetime.fromtimestamp(time.time() if moment is None else moment,timezone.utc)
     result=[]
-    for feed,source,market,due,lag,started in db.execute("""SELECT * FROM feed_contracts
-        WHERE source NOT GLOB 'ws-*' OR source GLOB ? ORDER BY feed,market""",(f"ws-{owner}-*",)):
+    for feed,source,market,due,lag,started in db.execute(f"""SELECT * FROM feed_contracts
+        WHERE source IN ({analytics.source_policy.VISIBLE}) ORDER BY feed,market""",(owner,)):
         hour,minute=map(int,due.split(":"))
         end=now.replace(hour=hour,minute=minute,second=0,microsecond=0)
         if end>now:end-=timedelta(days=1)
@@ -168,7 +171,10 @@ def download(spec):
 
 
 def parse(data, fmt):
-    raw = data.decode("utf-8-sig")
+    try: raw=data.decode("utf-8-sig")
+    except UnicodeDecodeError:
+        if fmt!="csv": raise
+        raw=data.decode("gb18030")
     if fmt == "csv":
         return csv.DictReader(StringIO(raw,newline=""),strict=True)
     if fmt == "json":
@@ -203,7 +209,7 @@ def ingest(db, spec, location, data, fmt, owner):
             db.execute("UPDATE feed_items SET arrivals_logged=1 WHERE feed=? AND source=? AND location=?",key)
             rows=0
         else:
-            rows=analytics.import_rows(db,records(),spec["source"])["rows"]
+            rows=analytics.import_rows(db,records(),spec["source"],owner=spec.get("owner"),shared=spec.get("shared",False))["rows"]
             received=int(time.time())
             db.execute("""INSERT INTO feed_items(feed,source,location,digest,rows,checked_at,arrivals_logged) VALUES(?,?,?,?,?,?,1)
                 ON CONFLICT(feed,source,location) DO UPDATE SET digest=excluded.digest,rows=excluded.rows,

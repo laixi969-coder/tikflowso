@@ -17,6 +17,10 @@ class BillingError(ValueError):
 
 
 def init(db):
+    db.execute("""CREATE TABLE IF NOT EXISTS webhook_inbox(
+        event TEXT PRIMARY KEY,kind TEXT NOT NULL,state TEXT NOT NULL,tries INTEGER NOT NULL DEFAULT 0,
+        due INTEGER NOT NULL,error_type TEXT,received INTEGER NOT NULL)""")
+    db.execute("CREATE INDEX IF NOT EXISTS webhook_due ON webhook_inbox(state,due)")
     db.executescript("""
         CREATE TABLE IF NOT EXISTS billing_customers (
             user_id PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
@@ -60,6 +64,9 @@ def _base():
     return url + "/"
 
 
+import transport
+
+
 def _stripe(path, fields=None, *, key=None):
     headers = {"Authorization": "Bearer " + os.environ["STRIPE_SECRET_KEY"],
                "Stripe-Version": "2025-08-27.basil"}
@@ -68,7 +75,7 @@ def _stripe(path, fields=None, *, key=None):
         headers["Idempotency-Key"] = key
     req = request.Request("https://api.stripe.com/v1/" + path, data=data, headers=headers)
     try:
-        with request.urlopen(req, timeout=12) as resp:
+        with transport.open_provider(req, timeout=12) as resp:
             return json.load(resp)
     except (error.URLError, TimeoutError, OSError, ValueError) as exc:
         raise BillingError("支付平台暂时无法处理请求，请检查支付配置后重试。", 502) from exc
@@ -160,6 +167,8 @@ def checkout(db, user, plan):
               "line_items[0][price]": _prices()[plan], "line_items[0][quantity]": 1,
               "subscription_data[metadata][tikflowso_user]": str(uid), "success_url": target,
               "cancel_url": target}
+    if os.getenv("STRIPE_AUTOMATIC_TAX")=="1":
+        fields.update({"automatic_tax[enabled]":"true","customer_update[address]":"auto"})
     session = _stripe("checkout/sessions", fields, key=rec["checkout_key"])
     with db:
         db.execute("UPDATE billing_customers SET session_id=? WHERE user_id=? AND checkout_key=?",
@@ -200,6 +209,56 @@ def webhook(db, body, signature):
             raise ValueError()
     except (KeyError, TypeError, ValueError) as exc:
         raise BillingError("支付回调格式无效。") from exc
+    with db:
+        db.execute("""INSERT OR IGNORE INTO webhook_inbox(event,kind,state,due,received)
+                   VALUES(?,?,'pending',?,?)""",(event_id,kind,int(time.time())+120,int(time.time())))
+    return process_recorded(db,event)
+
+
+def process_recorded(db,event):
+    event_id=event["id"]
+    try:
+        result=apply_event(db,event)
+        with db:
+            db.execute("UPDATE webhook_inbox SET state='done',error_type=NULL WHERE event=?",(event_id,))
+        return result
+    except Exception as exc:
+        db.rollback()
+        mark_failure(db,event_id,exc)
+        raise
+
+
+def mark_failure(db,event_id,exc):
+    with db:
+        db.execute("""UPDATE webhook_inbox SET tries=tries+1,state=CASE WHEN tries>=7 THEN 'failed' ELSE 'retry' END,
+                  due=?+min(86400,60*(1<<min(tries,10))),error_type=? WHERE event=? AND state!='done'""",
+                  (int(time.time()),type(exc).__name__,event_id))
+
+
+def retry_one(connect):
+    from contextlib import closing
+    if not _enabled(): return False
+    now=int(time.time())
+    with closing(connect()) as db:
+        with db:
+            hit=db.execute("""UPDATE webhook_inbox SET state='pending',due=? WHERE event=(
+                    SELECT event FROM webhook_inbox WHERE state IN ('pending','retry') AND due<=? ORDER BY due LIMIT 1)
+                    RETURNING event""",(now+300,now)).fetchone()
+        if not hit:return False
+        event_id=hit[0]
+        try:
+            event=_stripe("events/"+parse.quote(event_id,safe=""))
+            if event.get("id")!=event_id: raise ValueError("供应商事件编号不一致")
+        except Exception as exc:
+            mark_failure(db,event_id,exc)
+            return True
+        try: process_recorded(db,event)
+        except Exception: pass  # process_recorded persisted the retry and its error category.
+    return True
+
+
+def apply_event(db,event):
+    event_id,kind,obj=event["id"],event["type"],event["data"]["object"]
     if kind in ("charge.dispute.created","charge.dispute.updated","charge.dispute.closed"):
         return partnerships.settlement.receive_event(db,event)
     if kind in partnerships.FINANCIAL_EVENTS:
@@ -232,4 +291,7 @@ def webhook(db, body, signature):
             db.execute("UPDATE billing_customers SET session_id=NULL,checkout_plan=NULL,checkout_key=NULL "
                        "WHERE user_id=? AND session_id=?", (uid, obj.get("id")))
         db.execute("UPDATE users SET plan=? WHERE id=?", (plan, uid))
+        if plan!="team":
+            db.execute("UPDATE users SET owner=NULL WHERE owner=?",(uid,))
+            db.execute("DELETE FROM invites WHERE owner=?",(uid,))
     return {"received": True}

@@ -26,14 +26,16 @@ def available():
 def transcribe(media, language="auto"):
     if not available():
         raise RequestError(503, "请配置本地语音识别引擎与 Whisper 权重")
-    if language not in {"auto", "zh", "en"} or not 0 < len(media) <= LIMIT_BYTES:
+    size=media.stat().st_size if isinstance(media,Path) else len(media)
+    if language not in {"auto", "zh", "en"} or not 0 < size <= LIMIT_BYTES:
         raise ValueError("请检查音轨文件大小和语言")
     if not SLOT.acquire(blocking=False):
         raise RequestError(429, "本机正在转写其他音轨，请稍后重试")
     try:
         with tempfile.TemporaryDirectory(prefix="tikflowso-asr-") as tmp:
             origin, audio, result = (Path(tmp) / n for n in ("source", "speech.wav", "captions"))
-            origin.write_bytes(media)
+            if isinstance(media,Path): origin=media
+            else: origin.write_bytes(media)
             decode = subprocess.run(["ffmpeg","-nostdin","-v","error","-protocol_whitelist","file",
                 "-format_whitelist","mov,matroska,webm,mp3,wav,aiff,aac,flac,ogg","-i",str(origin),
                 "-map","0:a:0","-t","601","-vn","-ac","1","-ar","16000","-c:a","pcm_s16le",str(audio)],

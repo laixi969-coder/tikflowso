@@ -20,8 +20,9 @@ class BillingTests(unittest.TestCase):
         self.db = sqlite3.connect(":memory:")
         self.addCleanup(self.db.close)
         self.db.row_factory = sqlite3.Row
-        self.db.execute("CREATE TABLE users(id INTEGER PRIMARY KEY,email,name,plan)")
-        self.db.executemany("INSERT INTO users VALUES (?, 'fixture@example.org','研究员','free')", [(1,), (2,)])
+        self.db.execute("CREATE TABLE users(id INTEGER PRIMARY KEY,email,name,plan,owner INTEGER)")
+        self.db.execute("CREATE TABLE invites(owner INTEGER)")
+        self.db.executemany("INSERT INTO users(id,email,name,plan) VALUES (?, 'fixture@example.org','研究员','free')", [(1,), (2,)])
         billing.init(self.db)
         self.user = self.db.execute("SELECT * FROM users WHERE id=1").fetchone()
 

@@ -1,4 +1,7 @@
+import { translateText } from "./text-translation.js";
 import { renderTools } from "./tools.js";
+import { askOnBoard, boardAssistant } from "./board-chat.js";
+import { downloadMarketReport } from "./resource-center.js";
 import { localeTag, displayDate, localMessage } from "./locale.js";
 
 const icons = {
@@ -53,7 +56,7 @@ const icon = (name, size = 18) =>
   '" height="' +
   size +
   '" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round">' +
-  (icons[name] || "") +
+  (icons[name] || (name==="plans" ? icons.account : "")) +
   "</svg>";
 const esc = (v) =>
   String(v ?? "").replace(
@@ -84,7 +87,9 @@ const names = {
   favorites: "我的收藏",
   monitor: "监控中心",
   tools: "运营工具",
+  creative: "AI 创作工具",
   api: "开放 API",
+  plans: "套餐与额度",
   account: "账户设置",
   admin: "管理员后台",
   resources: "使用指南",
@@ -96,9 +101,10 @@ const navGroups = [
   ["工作空间", ["dashboard", "favorites", "monitor"]],
   ["电商数据", ["products", "shops", "creators", "videos", "lives"]],
   ["市场研究", ["markets", "categories", "trends", "inspiration"]],
-  ["工具与服务", ["agent", "tools", "api", "resources"]],
+  ["工具与服务", ["creative", "tools", "agent", "api", "resources", "plans"]],
 ];
 const metricNames = {
+  price: "商品标价",
   gmv: "成交额",
   sales: "销量",
   views: "观看次数",
@@ -136,7 +142,7 @@ const imageKeys = new Set([
   "cup",
   "planner",
 ]);
-const currencySymbol = { USD: "$", GBP: "£", IDR: "Rp", MYR: "RM", EUR: "€" };
+const currencySymbol = { USD: "$", GBP: "£", IDR: "Rp", MYR: "RM", EUR: "€", CNY: "¥" };
 const compact = (v, precision = 1) =>
   v == null
     ? "—"
@@ -163,7 +169,6 @@ try {
 let meta = {},
   current,
   renderId = 0,
-  overviewTab = "products",
   chartMetric = "gmv",
   toastTimer;
 const $ = (s) => document.querySelector(s);
@@ -278,6 +283,7 @@ function updateScope(field, value) {
   delete p.date;
   delete p.days;
   delete p.page;
+  if (current.view === "dashboard" && (field === "market" || field === "source")) delete p.category;
   if (current.view === "detail" && (field === "source" || field === "market")) {
     location.hash = href(kinds[p.kind] ? p.kind : "dashboard");
     return;
@@ -331,7 +337,7 @@ function nav() {
               '" class="nav-item" data-nav="' +
               k +
               '">' +
-              icon(k === "markets" ? "globe" : k, 17) +
+              icon(({markets:"globe",creative:"inspiration",plans:"money"})[k] || k, 17) +
               "<span>" +
               names[k] +
               "</span></a>",
@@ -374,7 +380,9 @@ function sourceUI() {
 function heading(view) {
   const description = {
     markets: "在相同时间窗口内比较各市场的销售规模、商品均价和活跃对象。",
-    dashboard: "跟踪 TikTok Shop 的销售表现、品类变化与热门商品。",
+    dashboard: scope.market === "CN"
+      ? "跟踪抖音电商的销售表现、品类变化与热门商品。"
+      : "跟踪 TikTok Shop 的销售表现、品类变化与热门商品。",
     products: "发现热销商品，比较成交表现与增长速度。",
     shops: "研究本地与跨境店铺的销售表现。",
     creators: "按成交、观看与粉丝增长寻找合作达人。",
@@ -384,7 +392,7 @@ function heading(view) {
     trends: "从话题、音乐和关键词中发现热门内容。",
     inspiration: "从脚本和代表内容中寻找下一条创作方向。",
   };
-  const usesScope = !["account", "admin", "favorites", "monitor", "api", "resources"].includes(view);
+  const usesScope = !["account", "admin", "favorites", "monitor", "api", "resources", "plans"].includes(view);
   return (
     '<div class="page-heading"><div>' + (usesScope ? '<div class="eyebrow"><i></i>' +
     esc(
@@ -453,6 +461,9 @@ function detailHref(row) {
     }),
   );
 }
+function translateName(row) {
+  return row.kind === "products" ? '<button type="button" class="name-translation" data-ui-label data-translate-name="'+esc(row.name)+'">翻译名称</button>' : "";
+}
 function recordList(rows, currency, kind) {
   if (!rows?.length) return showEmpty();
   const selectedSort = current?.params.sort || "";
@@ -484,7 +495,7 @@ function recordList(rows, currency, kind) {
           esc(r.name) +
           "</b><small>" +
           esc(r.subtitle || r.id) +
-          '</small></span></a></td><td><span class="category-chip">' +
+          '</small></span></a>'+translateName(r)+'</td><td><span class="category-chip">' +
           esc(r.category || "—") +
           '</span></td><td class="num"><b>' +
           money(r.gmv, currency) +
@@ -523,7 +534,7 @@ function chart(data, metric, currency) {
   const max = Math.max(min + 3 * step, Math.ceil((high + step * .25) / step) * step);
   const xFor = time => left + (width-left-right) * (end === start ? .5 : (time-start)/(end-start));
   const yFor = value => top + (floor-top) * (1-(value-min)/(max-min));
-  const fmt = value => metric === "gmv" ? money(value, currency) : compact(value);
+  const fmt = value => ["gmv","price"].includes(metric) ? money(value, currency) : compact(value);
   const points = observed.map(point => ({
     x:xFor(Date.parse(point.date)), y:yFor(point[metric]), date:point.date, value:point[metric]
   }));
@@ -557,23 +568,26 @@ function chart(data, metric, currency) {
       '<circle class="chart-target" cx="'+p.x+'" cy="'+p.y+'" r="9"><title>'+esc(p.date+' · '+fmt(p.value))+'</title></circle></g>').join('');
   return '<svg class="plot" viewBox="0 0 '+width+' '+height+'" role="img" aria-label="'+esc(metricNames[metric])+'逐日走势"><defs><linearGradient id="fillplot" x1="0" x2="0" y1="0" y2="1"><stop offset="0%" stop-color="#c4f495" stop-opacity=".38"/><stop offset="100%" stop-color="#c4f495" stop-opacity=".015"/></linearGradient></defs>'+horizontal+paths+marks+dates+'</svg>';
 }
-function chartPanel(rows, currency, title = "市场成交走势") {
+function chartPanel(rows, currency, title = "市场成交走势", includePrice = false) {
+  const options = {gmv:"GMV",sales:"销量",views:"观看次数"};
+  if (includePrice) options.price=metricNames.price;
+  const active = Object.hasOwn(options,chartMetric) ? chartMetric : "gmv";
   return (
     '<section class="chart-card"><div class="panel-head"><div><span class="section-kicker">每日数据 · ' +
     esc(currency) +
     "</span><h2>" +
-    title +
+    esc(title) +
     '</h2></div><div class="chart-metrics">' +
     optionField(
       "趋势指标",
       "chart",
-      { gmv: "GMV", sales: "销量", views: "观看次数" },
-      chartMetric,
+      options,
+      active,
     ) +
     "</div></div>" +
-    chart(rows || [], chartMetric, currency) +
+    chart(rows || [], active, currency) +
     '<div class="chart-foot"><span><i></i>' +
-    esc(metricNames[chartMetric]) +
+    esc(metricNames[active]) +
     "</span><span>" +
     esc(
       rows?.length
@@ -650,38 +664,185 @@ function kpi(metrics, changes, currency) {
     "</div>"
   );
 }
-function overview(data) {
-  const rows = data.rankings[overviewTab] || [];
-  return (
-    kpi(data.metrics, data.changes, data.currency) +
-    '<div class="dashboard-charts">' +
-    chartPanel(data.trend, data.currency) +
-    categoryPanel(data.categories) +
-    '</div><section class="panel leaderboard"><div class="panel-head"><div><span class="section-kicker">TOP 5 · 按成交额</span><h2>市场排行榜</h2></div><a href="#' +
-    overviewTab +
-    '" class="text-link">完整榜单 ' +
-    icon("arrow", 15) +
-    '</a></div><div class="tabs">' +
-    Object.entries(kinds)
-      .map(
-        ([k, n]) =>
-          '<button data-rank="' +
-          k +
-          '" aria-pressed="' +
-          (k === overviewTab) +
-          '" class="' +
-          (k === overviewTab ? "active" : "") +
-          '">' +
-          n +
-          "</button>",
-      )
-      .join("") +
-    "</div>" +
-    recordList(rows, data.currency, overviewTab) +
-    "</section>"
-  );
+function boardLink(view, params = {}) {
+  return esc(href(view, {...scopeParams(), date:scope.date || meta.date, ...params}));
 }
-function library(view, data, p) {
+function resourceLinks() {
+  const entries=[["市场报告","reports"],["版本更新","updates"],["帮助中心","help"],["运营指南","playbooks"],["推荐与佣金","partners"]];
+  $("#resource-links").innerHTML=entries.map(([label,section])=>'<a data-ui-label href="'+boardLink("resources",{section})+'">'+esc(localMessage(label))+'</a>').join("")+
+    '<a data-ui-label href="'+boardLink("tools",{tool:"alerts"})+'">'+esc(localMessage("监控通知"))+'</a>';
+}
+function boardDiscovery() {
+  const groups = [
+    ["creators","找达人",[["带货达人","creators",{sort:"sales"}],["涨粉达人","creators",{sort:"follower_growth"}],["黑马达人","creators",{segment:"breakout",sort:"growth"}]]],
+    ["products","找商品",[["热销商品","products",{sort:"sales"}],["热推商品","products",{segment:"promoted"}],["品类分析","categories",{}]]],
+    ["shops","找店铺",[["本地店铺","shops",{segment:"local",sort:"sales"}],["跨境店铺","shops",{segment:"crossborder",sort:"sales"}],["S 店","shops",{segment:"s"}]]],
+    ["videos","找内容",[["带货视频","videos",{sort:"sales"}],["图文","videos",{segment:"image",sort:"sales"}],["视频拆解","tools",{tool:"video"}]]]
+  ];
+  return '<div class="board-entry">'+searchForm("", "creators", "broad")+
+    boardAssistant({...scopeParams(),date:scope.date || meta.date},{esc,href,t:localMessage,icon})+'</div>'+
+    '<div class="board-shortcuts">'+groups.map(([kind,title,links])=>
+      '<section class="panel"><a class="board-group" href="'+boardLink(kind)+'">'+icon(kind,18)+'<span data-ui-label>'+title+'</span></a>'+
+      links.map(([label,view,params])=>'<a class="board-shortcut" data-ui-label href="'+boardLink(view,params)+'">'+label+'</a>').join("")+
+      '</section>').join("")+'</div>';
+}
+function boardRanking(board, currency) {
+  const growth = board.sort === "follower_growth";
+  const list = boardLink(board.kind, {sort:board.sort,segment:board.segment});
+  return '<section class="panel board-ranking"><div class="panel-head"><h2>'+esc(board.title)+
+    '</h2><div class="tf-inline">'+(board.kind==="products"&&board.items.length?'<button class="btn" type="button" data-translate-board>翻译商品名称</button>':'')+
+    '<a class="text-link" href="'+list+'">完整榜单 '+icon("arrow",14)+'</a></div></div>'+
+    (board.items.length ? '<div class="table-wrap"><table class="records"><thead><tr><th>排名</th><th>'+kinds[board.kind]+
+    '</th><th class="num">'+(growth?"净增粉丝":"销量")+'</th><th class="num">'+(growth?"粉丝数":"GMV · "+esc(currency))+'</th></tr></thead><tbody>'+
+    board.items.map(r=>'<tr><td><span class="rank'+(r.rank<=3?' top':'')+'">'+r.rank+'</span></td><td><a class="record" href="'+detailHref(r)+'">'+
+      thumb(r)+'<b>'+esc(r.name)+'</b></a>'+translateName(r)+'</td><td class="num">'+number(growth?r.follower_growth:r.sales)+'</td><td class="num">'+
+      (growth?number(r.followers):money(r.gmv,currency)+(r.gmv_estimated?' <small data-ui-label>含来源估算</small>':''))+'</td></tr>').join("")+
+    '</tbody></table></div>':showEmpty())+'</section>';
+}
+const liveTime = value => value ? new Date(value).toISOString().slice(0,19).replace("T"," ") : "—";
+function onlineViewers(room) {
+  const t = key=>esc(localMessage(key));
+  const series = room.series;
+  if (!series.length) return '<p class="muted">'+t("没有在线人数观测")+'</p>';
+  const start = Date.parse(series[0].time), span = Date.parse(series.at(-1).time)-start;
+  const max = Math.max(1,...series.map(point=>point.value));
+  const points = series.map(point=>({...point,x:46+(span ? (Date.parse(point.time)-start)/span : .5)*330,y:92-point.value/max*78}));
+  const label = t(room.series_basis==="session"?"本场在线人数":"窗口内在线人数");
+  return '<figure class="live-viewers"><figcaption>'+label+' · '+
+    t(room.series_source==="stream"?"供应商时点观测":"来源日快照")+' · UTC</figcaption>'+
+    '<svg viewBox="0 0 395 105" role="img" aria-label="'+label+'"><text x="39" y="18" text-anchor="end">'+compact(max)+'</text>'+
+    '<text x="39" y="95" text-anchor="end">0</text><path d="M46 14 V92 H376" stroke="currentColor" opacity=".35" fill="none"/>'+
+    (points.length>1?'<polyline points="'+points.map(p=>p.x+','+p.y).join(' ')+'" fill="none" stroke="currentColor" stroke-width="1.5"/>':'')+
+    points.map(p=>'<circle cx="'+p.x+'" cy="'+p.y+'" r="3" fill="currentColor"><title>'+liveTime(p.time)+' UTC · '+number(p.value)+'</title></circle>').join('')+
+    '</svg><div><time>'+liveTime(series[0].time)+'</time><time>'+liveTime(series.at(-1).time)+'</time></div></figure>'+
+    '<details class="live-series-values"><summary>'+t("查看时点明细")+' ('+series.length+')</summary>'+
+    points.map(p=>'<div><time>'+liveTime(p.time)+' UTC</time><b>'+number(p.value)+'</b></div>').join('')+'</details>';
+}
+function boardLive(data) {
+  const t = key=>esc(localMessage(key)), preview = data.live_preview, room = preview.room;
+  const heading = '<div class="panel-head"><h2>'+t("直播分析")+'</h2><a class="text-link" href="'+boardLink("lives",{sort:"gmv"})+'">'+t("完整榜单")+'</a></div>';
+  if (!room) return '<section class="panel board-live">'+heading+showEmpty("所选市场与日期没有直播场次")+'</section>';
+  const link = (kind,item) => item.name ? '<a class="text-link" href="'+detailHref({kind,id:item.id})+'">'+esc(item.name)+'</a>' : esc(item.id);
+  const list = '<div class="live-picker"><h3>'+t("直播间排行")+'</h3><small>'+t("按周期成交额排序")+' · '+esc(data.currency)+'</small>'+
+    '<table><thead><tr>'+["直播间","周期成交额","本场成交额","本场进场人次"].map(s=>'<th>'+t(s)+'</th>').join('')+'</tr></thead><tbody>'+
+    preview.rooms.map(r=>'<tr><td><button type="button" data-board-room="'+esc(r.id)+'" aria-pressed="'+(r.id===room.id)+'"><small>'+
+      number(r.rank)+'</small> '+esc(r.name)+'</button></td><td>'+money(r.period_gmv,data.currency)+(r.period_estimated?' <small>'+t("含来源估算")+'</small>':'')+
+      '</td><td>'+money(r.session_gmv,data.currency)+'</td><td>'+number(r.enter_count)+'</td></tr>').join('')+'</tbody></table></div>';
+  const facts = [["本场成交额",money(room.gmv,data.currency,false)],["本场进场人次",number(room.enter_count)],
+    ["直播品类",esc(room.category || "—")],["关联达人",room.creator?link("creators",room.creator):"—"],
+    ["开播时间（UTC）",liveTime(room.start_at)],["结束时间（UTC）",liveTime(room.end_at)]];
+  const products = room.products.length ? '<ol class="live-products">'+room.products.map(p=>'<li>'+
+    link("products",p)+' <b>'+number(p.sales)+'</b></li>').join('')+'</ol>' : '<p class="muted">'+t("没有本场商品销量记录")+'</p>'+
+    (room.daily_links.length?'<details><summary>'+t("当日快照关联商品")+'</summary>'+room.daily_links.map(p=>link("products",p)).join(' · ')+'</details>':'');
+  return '<section class="panel board-live">'+heading+'<div class="board-live-layout">'+list+
+    '<section class="live-preview" aria-live="polite" data-preview-room="'+esc(room.id)+'"><header><div><small>'+
+    esc(data.source==="demo"?localMessage("演示数据"):data.source)+' · '+esc(data.market)+' · '+esc(room.day)+'</small><h3>'+esc(room.name)+
+    '</h3></div><a class="text-link" data-live-detail href="'+detailHref({kind:"lives",id:room.id})+'">'+t("查看场次详情")+'</a></header>'+
+    '<dl>'+facts.map(([name,value])=>'<div><dt>'+t(name)+'</dt><dd>'+value+'</dd></div>').join('')+'</dl>'+
+    '<h4>'+t("在线人数观测")+'</h4>'+onlineViewers(room)+'<h4>'+t("本场销量前三商品")+'</h4>'+products+
+    '<h4>'+t("相似直播场次")+'</h4>'+(room.similar.length?room.similar.map(r=>link("lives",r)).join(' · '):
+      '<p class="muted">'+t("所选周期没有同类场次")+'</p>')+'</section></div><output role="status"></output></section>';
+}
+async function selectBoardRoom(button) {
+  const root=button.closest(".board-live"), id=button.dataset.boardRoom, currentPage=cachedPage;
+  if (root.dataset.loading===id || (!root.dataset.loading && currentPage.live_preview.room.id===id)) return;
+  root.dataset.loading=id;
+  const request=Symbol();
+  root.liveRequest=request;
+  const output=root.querySelector("output");
+  output.textContent=localMessage("正在加载场次…");
+  try {
+    const data=await api("overview",{...scopeParams(),date:currentPage.date,live_only:1,room:id});
+    if (!root.isConnected || root.liveRequest!==request || currentPage!==cachedPage) return;
+    currentPage.live_preview=data.live_preview;
+    root.outerHTML=boardLive(currentPage);
+    current.params={...current.params,...scopeParams(),date:currentPage.date,room:data.live_preview.room?.id};
+    history.replaceState(null,"",href("dashboard",current.params));
+    document.querySelector('.board-live [aria-pressed="true"]')?.focus({preventScroll:true});
+  } catch(error) {
+    if (root.isConnected && root.liveRequest===request) { delete root.dataset.loading; output.textContent=localMessage(error.message); }
+  }
+}
+function overview(data) {
+  const categories = {"":"全部品类",...Object.fromEntries(meta.categories.map(c=>[c,c]))};
+  if (data.category) categories[data.category] = data.category;
+  return boardDiscovery()+
+    '<div class="panel-head board-category"><h2 data-ui-label>品类看板</h2>'+optionField("品类","category",categories,data.category)+'<button class="btn" data-market-report>下载市场报告</button></div>'+
+    kpi(data.metrics, data.changes, data.currency)+
+    '<dl class="board-activity">'+[["有销量商品",number(data.activity.active_products)],["有销量店铺",number(data.activity.active_shops)],
+      ["成交均价",money(data.activity.avg_price,data.currency,false)]].map(([label,value])=>'<div><dt data-ui-label>'+label+'</dt><dd>'+value+'</dd></div>').join("")+'</dl>'+
+    '<div class="dashboard-charts">'+chartPanel(data.trend,data.currency,data.category || "市场成交走势")+
+    categoryPanel(data.categories)+'</div>'+boardLive(data)+'<div class="panel-head board-category"><h2>市场排行榜</h2><time>'+esc(dateText(data.date))+'</time></div><div class="board-list">'+data.boards.map(board=>boardRanking(board,data.currency)).join("")+
+    '</div><a class="text-link" href="'+boardLink("tools",{tool:"partners"})+'">推荐与佣金 '+icon("arrow",14)+'</a>';
+}
+function metricRanges(kind) {
+  const fields = {gmv:"周期成交额", sales:"周期销量"};
+  if (kind === "products") fields.price = "期末标价";
+  if (kind === "creators") fields.followers = "期末粉丝数";
+  if (["videos","lives","creators"].includes(kind)) fields.views = "周期观看次数";
+  return fields;
+}
+function rankingRanges(kind, params) {
+  const bounds = {};
+  for (const metric of Object.keys(metricRanges(kind))) {
+    for (const edge of ["min","max"]) {
+      const key = edge+"_"+metric;
+      if (params[key] !== undefined && params[key] !== "") bounds[key]=params[key];
+    }
+  }
+  return bounds;
+}
+function researchFilters(kind, data, params, presets) {
+  const active=Object.keys(rankingRanges(kind,params)).length>0;
+  const fields=Object.entries(metricRanges(kind)).map(([metric,label])=>{
+    const monetary=["gmv","price"].includes(metric);
+    const unit=monetary?" ("+esc(data.currency)+")":"";
+    const inputs=["min","max"].map((edge)=>{
+      const name=edge+"_"+metric;
+      const hint=localMessage(edge==="min"?"最低":"最高");
+      return '<input type="number" min="0" step="'+(monetary?'0.01':'1')+'" name="'+name+
+        '" aria-label="'+esc(localMessage(label)+" "+hint)+'" placeholder="'+esc(hint)+'" value="'+esc(params[name]||"")+'">';
+    }).join(" – ");
+    return '<fieldset class="range-pair"><legend>'+esc(localMessage(label))+unit+'</legend><span>'+inputs+'</span></fieldset>';
+  }).join("");
+  return '<details class="research-filters"'+(active?' open':'')+'><summary data-ui-label>数值区间与常用筛选</summary>'+
+    '<form id="ranking-ranges">'+fields+'<button class="btn">应用区间</button><button class="btn" type="button" data-reset-ranges>清除区间</button></form>'+
+    '<form id="ranking-preset"><input name="name" required maxlength="60" placeholder="筛选方案名称" aria-label="筛选方案名称">'+
+    '<button class="btn">保存当前已应用条件</button></form>'+
+    presets.map(row=>'<div class="tf-inline"><a class="text-link" href="'+esc(href(kind,row.params))+'">'+esc(row.name)+
+      '</a><button class="btn" type="button" data-delete-preset="'+esc(row.name)+'">删除方案</button></div>').join("")+
+    '</details>';
+}
+function libraryCategories(values, selected = "") {
+  const delimiter = " > ";
+  const paths = new Set(values);
+  if (selected) paths.add(selected);
+  if (![...paths].some(path => path.includes(delimiter))) {
+    const options = {"":"全部品类", ...Object.fromEntries([...paths].map(name => [name, name]))};
+    return optionField("品类", "category", options, selected);
+  }
+  const split = path => {
+    const [first, second, ...rest] = path.split(delimiter);
+    return [first, second, rest.join(delimiter)].filter(Boolean);
+  };
+  const selectedLevels = split(selected);
+  const pathsByLevel = [...paths].map(split);
+  let html = "";
+  for (const [depth, label] of ["一级品类", "二级品类", "三级品类"].entries()) {
+    if (depth > selectedLevels.length) break;
+    const branch = selectedLevels.slice(0, depth);
+    const children = pathsByLevel.filter(parts => parts.length > depth
+      && branch.every((value, i) => value === parts[i]));
+    if (!children.length) break;
+    const choices = children.map(parts => [parts.slice(0, depth + 1).join(delimiter), parts[depth]]);
+    const parent = branch.join(delimiter);
+    html += optionField(label, "category",
+      {[parent]: depth ? "全部子类" : "全部品类", ...Object.fromEntries(choices)},
+      selectedLevels.slice(0, depth + 1).join(delimiter));
+  }
+  return html;
+}
+function library(view, data, p, presets) {
   const sorts = {
     gmv: "成交额从高到低",
     sales: "销量从高到低",
@@ -729,15 +890,7 @@ function library(view, data, p) {
     esc(p.q || "") +
     '" maxlength="150"></form>' +
     matchControl(p.match) +
-    optionField(
-      "品类",
-      "category",
-      {
-        "": "全部品类",
-        ...Object.fromEntries((meta.categories || []).map((c) => [c, c])),
-      },
-      p.category || "",
-    ) +
+    libraryCategories(meta.categories_by_kind?.[view] || meta.categories || [], p.category) +
     optionField(
       "排序方式",
       "sort",
@@ -745,6 +898,7 @@ function library(view, data, p) {
       p.sort || (p.segment === "breakout" ? "growth" : "gmv"),
     ) +
     "</div>" +
+    researchFilters(view,data,p,presets) +
     (p.segment === "breakout"
       ? '<p class="rule-note">黑马达人要求两期快照完整，本期销量至少 20 件，前期有成交，成交额环比增长至少 15%，期末粉丝少于 20 万。<small> v1</small></p>'
       : p.segment==="promoted"?'<p class="rule-note">热推使用来源在窗口末次快照中提供的推广标记，按所选指标排序。</p>':"") +
@@ -795,6 +949,30 @@ function relatedCards(rows) {
     "</div>"
   );
 }
+function livePanels(data) {
+  const analysis = data.live_analysis;
+  if (!analysis) return "";
+  const section = (heading,body) => '<section class="panel live-analysis"><div class="panel-head"><h2>'+esc(localMessage(heading))+
+    '</h2></div><div class="panel-body">'+body+'</div></section>';
+  const period = [data.source,data.market,data.start_date,data.date].map(esc).join(' · ');
+  const productRows = analysis.products.map(item=>{
+    const name = item.name ? '<a class="text-link" href="'+detailHref({kind:"products",id:item.id})+'">'+esc(item.name)+'</a>' : esc(item.id);
+    return '<tr><td>'+name+'</td><td>'+esc(item.first_seen)+' — '+esc(item.last_seen)+'</td><td class="num">'+number(item.days)+
+      '</td><td class="num">'+number(item.sales)+'</td><td class="num">'+money(item.gmv,data.currency,false)+'</td></tr>';
+  });
+  const table = (headers,rows) => '<div class="table-wrap"><table class="records"><thead><tr>'+
+    headers.map(label=>'<th>'+esc(localMessage(label))+'</th>').join('')+'</tr></thead><tbody>'+rows.join('')+'</tbody></table></div>';
+  const points = analysis.points || [];
+  const observed = points.map(p=>'<tr><td>'+esc(p.stamp.slice(0,19).replace("T"," "))+'</td><td>'+
+    esc(localMessage(p.metric==="online_viewers"?"在线人数":metricNames[p.metric]))+'</td><td class="num">'+
+    (p.metric==="gmv"?money(p.value,data.currency,false):number(p.value))+'</td></tr>');
+  return section("直播商品分析",'<p class="muted">'+esc(localMessage("日快照中的商品关联与归属指标"))+' · '+period+'</p>'+
+    (productRows.length?table(["商品","关联日期","关联天数","商品归属销量","商品归属成交额"],productRows):showEmpty("所选周期没有商品关联记录")))+
+    section("相似直播场次",'<p class="muted">'+esc(localMessage("同市场、同类目，按周期成交额排序"))+
+      ' · '+esc(data.item.category || "—")+'</p>'+(analysis.similar.length?relatedCards(analysis.similar):showEmpty("所选周期没有同类场次")))+
+    section("供应商时点观测",'<p class="muted">'+esc(localMessage("按 UTC 展示窗口内最近 60 条观测"))+' · '+period+'</p>'+
+      (observed.length?table(["观测时间（UTC）","指标","观测值"],observed):showEmpty("所选周期没有供应商时点观测")));
+}
 function details(data) {
   const r = data.item;
   return (
@@ -805,7 +983,7 @@ function details(data) {
     '<span class="category-chip">' + esc(r.category || "未分类") + "</span>" +
     "</span><h2>" +
     esc(r.name) +
-    "</h2><p>" +
+    "</h2>" + translateName(r) + "<p>" +
     esc(r.subtitle || r.id) +
     '</p></div><div class="profile-actions"><button class="btn" data-save>' +
     icon("favorites", 15) +
@@ -829,7 +1007,7 @@ function details(data) {
       )
       .join("") +
     '</div></section><div class="detail-charts">' +
-    chartPanel(data.trend, data.currency, "每日表现") +
+    chartPanel(data.trend, data.currency, "每日表现", data.item.kind==="products") +
     '<section class="panel fact-panel"><div class="panel-head"><h2>对象档案</h2></div>' +
     [
       ["对象 ID", r.id],
@@ -852,8 +1030,9 @@ function details(data) {
       )
       .join("") +
     '</section></div><section class="panel"><div class="panel-head"><h2>关联对象</h2></div>' +
-    relatedCards(data.related) +
+    relatedCards(data.live_analysis ? data.related.filter(row=>row.kind!=="products") : data.related) +
     "</section>" +
+    livePanels(data) +
     profileDetails(r)
   );
 }
@@ -1025,7 +1204,7 @@ function profileDetails(row) {
   if (Object.keys(traffic).length)
     html += section(
       "直播流量",
-      facts([
+      '<p class="muted">'+esc(localMessage("来源日快照"))+' · '+esc(dateText(row.updated_at))+'</p>'+facts([
         [localMessage("在线峰值"), number(traffic.peak_viewers)],
         [
           localMessage("平均观看时长"),
@@ -1176,7 +1355,7 @@ function searchForm(q, kind, match) {
       kind || "",
     ) +
     matchControl(match) +
-    '<button class="primary">搜索</button></form></section>'
+    '<button type="button" class="btn" data-translate-query>翻译搜索词</button><button class="primary">搜索</button></form></section>'
   );
 }
 async function searched(p) {
@@ -1230,6 +1409,7 @@ async function render() {
   const { view, params: p } = current;
   cachedPage = null;
   document.body.classList.remove("nav-open");
+  syncNavigation();
   markActive(view, p);
   $("#crumb").textContent = names[view] || "页面未找到";
   document.title = (names[view] || "页面") + " · tikflowso";
@@ -1280,6 +1460,7 @@ async function render() {
     }
     if (id !== renderId) return;
     meta = fresh;
+    resourceLinks();
     sourceUI();
     mount.innerHTML =
       heading(view) +
@@ -1288,6 +1469,7 @@ async function render() {
     if (
       [
         "tools",
+        "creative",
         "agent",
         "monitor",
         "favorites",
@@ -1295,6 +1477,7 @@ async function render() {
         "admin",
         "api",
         "resources",
+        "plans",
       ].includes(view)
     ) {
       content.innerHTML = "";
@@ -1313,7 +1496,7 @@ async function render() {
     }
     let html, data;
     if (view === "dashboard") {
-      data = await api("overview", scopeParams());
+      data = await api("overview", {...scopeParams(),board:1,category:p.category,room:p.room});
       html = overview(data);
     } else if (view === "markets") {
       data = await api("markets", {
@@ -1322,8 +1505,9 @@ async function render() {
       });
       html = marketsTable(data);
     } else if (kinds[view]) {
-      data = await api("rankings", {
+      const [ranked,presets] = await Promise.all([api("rankings", {
         ...scopeParams(),
+        ...rankingRanges(view,p),
         kind: view,
         q: p.q,
         match: p.match||"broad",
@@ -1332,8 +1516,9 @@ async function render() {
         segment: p.segment,
         page: p.page || 1,
         limit: 10,
-      });
-      html = library(view, data, p);
+      }), api("ranking-presets",{kind:view})]);
+      data=ranked;
+      html = library(view, data, p, presets.items);
     } else if (view === "detail") {
       data = await api("detail", { ...scopeParams(), kind: p.kind, id: p.id });
       html = details(data);
@@ -1350,6 +1535,17 @@ async function render() {
       showEmpty(e.message || "数据加载失败") +
       '<div class="error-actions"><button data-retry class="btn">重新加载</button><a class="text-link" href="#dashboard">返回概览</a></div></section>';
   }
+}
+async function mutatePreset(name,remove) {
+  const routeAtClick=location.hash;
+  try {
+    await api("ranking-presets",{kind:current.view,name,remove,params:{...current.params,...scopeParams(),date:scope.date||meta.date}},true);
+    if (routeAtClick===location.hash) {
+      await render();
+      const filters=document.querySelector(".research-filters");
+      if (filters) filters.open=true;
+    }
+  } catch(err) {toast(err.message);}
 }
 async function queueExport(button) {
   button.disabled=true;
@@ -1369,6 +1565,7 @@ async function exportRows(button) {
     const q = new URLSearchParams({ ...p, ...scopeAtClick, kind: view });
     if (!q.get("date")) q.delete("date");
     const response = await fetch("/api/export?" + q);
+    if(response.status===202){location.hash="#tools?tool=exports";return;}
     if (!response.ok) {
       const body = await response.json();
       throw Error(body.error || "导出失败");
@@ -1413,6 +1610,8 @@ async function saveItem(button, monitor) {
 }
 function openSearch() {
   const d = $("#search-dialog");
+  $("#search-options").innerHTML=optionField("搜索范围","search-kind",{"":"全部类型",...kinds},current.params.kind||"")+
+    matchControl(current.params.match);
   if (!d.open) d.showModal();
   $("#query").focus();
 }
@@ -1425,8 +1624,27 @@ identity();
 $("#source").addEventListener("change", (e) =>
   updateScope("source", e.target.value),
 );
-$("#menu-btn").onclick = () => document.body.classList.toggle("nav-open");
-$("#veil").onclick = () => document.body.classList.remove("nav-open");
+const mobileNavigation=window.matchMedia("(max-width:780px)");
+try {document.body.classList.toggle("nav-collapsed",localStorage.getItem("tikflowso-nav-collapsed")==="true");} catch {}
+function syncNavigation(){
+  const expanded=mobileNavigation.matches?document.body.classList.contains("nav-open"):!document.body.classList.contains("nav-collapsed");
+  const label=localMessage(expanded?"收起导航":"展开导航");
+  $("#menu-btn").setAttribute("aria-expanded",String(expanded));
+  $("#menu-btn").setAttribute("aria-label",label);
+  $("#menu-btn").title=label;
+  $("#sidebar").inert=!expanded;
+}
+$("#menu-btn").onclick = () => {
+  if(mobileNavigation.matches)document.body.classList.toggle("nav-open");
+  else{
+    const collapsed=document.body.classList.toggle("nav-collapsed");
+    try{localStorage.setItem("tikflowso-nav-collapsed",String(collapsed));}catch{}
+  }
+  syncNavigation();
+};
+$("#veil").onclick = () => {document.body.classList.remove("nav-open");syncNavigation();};
+mobileNavigation.addEventListener("change",syncNavigation);
+syncNavigation();
 $("#search-button").onclick = openSearch;
 $("#close-search").onclick = () => $("#search-dialog").close();
 $("#global-search").onsubmit = (e) => {
@@ -1434,14 +1652,20 @@ $("#global-search").onsubmit = (e) => {
   const q = $("#query").value.trim();
   if (!q) return;
   $("#search-dialog").close();
-  location.hash = href("search", { q });
+  const dialog=$("#search-dialog");
+  location.hash = href("search", {...scopeParams(),q,kind:dialog.querySelector('[data-field="search-kind"]').value,
+    match:dialog.querySelector('[data-field="match"]').value});
 };
 document.addEventListener("keydown", (e) => {
   if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "k") {
     e.preventDefault();
     openSearch();
   }
-  if (e.key === "Escape") document.body.classList.remove("nav-open");
+  if (e.key === "Escape") {
+    if ($("#search-dialog").open) $("#search-dialog").close();
+    document.body.classList.remove("nav-open");
+    syncNavigation();
+  }
 });
 $("#app").addEventListener("change", (e) => {
   const t = e.target;
@@ -1454,7 +1678,7 @@ $("#app").addEventListener("change", (e) => {
     chartMetric = t.value;
     $(".workspace-content").innerHTML =
       current.view === "detail" ? details(cachedPage) : overview(cachedPage);
-  } else if (f === "match") {
+  } else if (f === "match" && current.view !== "dashboard") {
     const search = document.querySelector(current.view === 'search' ? '#search-page [name=q]' : '#list-search [name=q]');
     change({match:t.value,q:search?.value.trim()||'',page:1});
   } else if (f === "category" || f === "sort") {
@@ -1465,12 +1689,28 @@ $("#app").addEventListener("change", (e) => {
 });
 $("#app").addEventListener("submit", (e) => {
   const f = e.target;
-  if (f.id === "list-search") {
+  if (f.id === "ranking-ranges") {
+    e.preventDefault();
+    for (const metric of Object.keys(metricRanges(current.view))) {
+      const min=f.elements["min_"+metric], max=f.elements["max_"+metric];
+      if (min.value && max.value && min.valueAsNumber > max.valueAsNumber) {
+        toast(localMessage("下限不能大于上限")); return;
+      }
+    }
+    change({...Object.fromEntries(new FormData(f)),page:1});
+  } else if (f.id === "ranking-preset") {
+    e.preventDefault();
+    mutatePreset(f.elements.name.value.trim(),false);
+  } else if (f.id === "list-search") {
     e.preventDefault();
     change({ q: f.elements.q.value.trim(), page: 1 });
+  } else if (f.id === "board-question") {
+    e.preventDefault();
+    askOnBoard(f,{...scopeParams(),date:scope.date || meta.date},{esc,href,t:localMessage,icon,api});
   } else if (f.id === "search-page") {
     e.preventDefault();
     location.hash = href("search", {
+      ...scopeParams(),date:scope.date || meta.date,
       q: f.elements.q.value.trim(),
       kind: f.querySelector('[data-field="search-kind"]').value,
       match: f.querySelector('[data-field="match"]').value,
@@ -1480,18 +1720,37 @@ $("#app").addEventListener("submit", (e) => {
 $("#app").addEventListener("click", (e) => {
   const t = e.target.closest("button");
   if (!t) return;
-  if (t.hasAttribute("data-rank") && cachedPage) {
-    overviewTab = t.dataset.rank;
-    $(".workspace-content").innerHTML = overview(cachedPage);
-  } else if (t.hasAttribute("data-segment"))
+  if (t.hasAttribute("data-board-room")) { selectBoardRoom(t); return; }
+  if (t.hasAttribute("data-translate-board")) {
+    const names = Array.from(t.closest(".board-ranking").querySelectorAll("[data-translate-name]"),button=>button.dataset.translateName);
+    translateText(api,names.join("\n"),scopeParams());
+    return;
+  }
+  if (t.hasAttribute("data-translate-query") || t.hasAttribute("data-translate-name")) {
+    const field = t.hasAttribute("data-translate-query") ? t.form.elements.q : null;
+    const source = field ? field.value.trim() : t.dataset.translateName;
+    if (!source) { field?.focus(); return; }
+    translateText(api, source, scopeParams(), field ? translation => {
+      field.value = translation;
+      field.form.requestSubmit();
+    } : null);
+    return;
+  }
+  if (t.hasAttribute("data-segment"))
     change({
       segment: t.dataset.segment,
       sort: t.dataset.segment === "breakout" ? "growth" : current.params.sort,
       page: 1,
     });
+  else if (t.hasAttribute("data-reset-ranges")) {
+    change({...Object.fromEntries(Object.keys(rankingRanges(current.view,current.params)).map(k=>[k,""])),page:1});
+    document.querySelector("#ranking-ranges")?.querySelectorAll("input").forEach(input=>input.value="");
+  }
+  else if (t.hasAttribute("data-delete-preset")) mutatePreset(t.dataset.deletePreset,true);
   else if (t.dataset.page) change({ page: t.dataset.page });
   else if (t.hasAttribute("data-retry")) render();
   else if (t.hasAttribute("data-queue-export") || (t.hasAttribute("data-export") && cachedPage?.total>1000)) queueExport(t);
+  else if (t.hasAttribute("data-market-report") && current.view==="dashboard" && cachedPage) downloadMarketReport(cachedPage);
   else if (t.hasAttribute("data-export")) exportRows(t);
   else if (t.hasAttribute("data-save-topic")) {
     t.disabled=true;
@@ -1510,7 +1769,9 @@ window.matchMedia("(max-width:600px)").addEventListener("change", () => {
     $(".workspace-content").innerHTML = details(cachedPage);
 });
 window.addEventListener("tikflowso:locale", async () => {
-  const liveForms = ["tools","agent","monitor","favorites","account","admin","api","resources"];
+  syncNavigation();
+  if(meta.date)resourceLinks();
+  const liveForms = ["tools","creative","agent","monitor","favorites","account","admin","api","resources"];
   if (!current || !meta.date) return;
   if (liveForms.includes(current.view)) {
     // Keep active file uploads, unsent inputs, and edited media mounted.

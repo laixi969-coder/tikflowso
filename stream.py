@@ -54,8 +54,12 @@ def ingest(db,token,body):
     return {"accepted":len(values),"source":source}
 
 
-def recent(db,monitor):
+def recent(db,monitor,*,window=None):
     """Latest observations; each cumulative value belongs to its own entity/series."""
+    params=tuple(monitor[k] for k in ("source","market","kind","id"))
+    period=""
+    if window:
+        period=" AND stamp>=? AND stamp<date(?,'+1 day')"
+        params+=tuple(window)
     return [dict(r) for r in db.execute("""SELECT stamp,metric,value FROM stream_points
-               WHERE source=? AND market=? AND kind=? AND id=? ORDER BY stamp DESC,metric LIMIT 60""",
-               tuple(monitor[k] for k in ("source","market","kind","id")))]
+               WHERE source=? AND market=? AND kind=? AND id=?"""+period+" ORDER BY stamp DESC,metric LIMIT 60",params)]

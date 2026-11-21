@@ -14,6 +14,8 @@ from urllib.parse import urlsplit
 from urllib.error import HTTPError
 
 from workspace import RequestError
+import model_spend
+import transport
 import control_settings
 import prompts
 
@@ -22,10 +24,6 @@ SLOT = threading.BoundedSemaphore(1)
 MAX_SHOTS = 12
 MAX_SECONDS = 600
 FORMATS = ["-protocol_whitelist","file,pipe","-format_whitelist","mov,matroska,webm,avi,mpegts"]
-class NoRedirect(request.HTTPRedirectHandler):
-    def redirect_request(self,*args): return None
-
-
 PROVIDERS={
     "bailian": ("https://dashscope.aliyuncs.com/compatible-mode/v1","qwen3.7-plus","DASHSCOPE_API_KEY"),
     "volcengine": ("https://ark.cn-beijing.volces.com/api/v3","doubao-seed-2-0-lite-260215","ARK_API_KEY"),
@@ -78,12 +76,14 @@ def call(path,payload=None,timeout=20,require_key=True,provider=None):
     if require_key and not token: raise RequestError(503,"所选平台缺少密钥，请联系平台管理员填写 API key")
     headers={"User-Agent":"tikflowso/1.0","Accept":"application/json","Content-Type":"application/json"}
     if require_key: headers["Authorization"]="Bearer "+token
-    req=request.Request(base+"/"+path.lstrip("/"),None if payload is None else json.dumps(payload).encode(),headers)
-    handlers=[NoRedirect()]
-    if loopback: handlers.append(request.ProxyHandler({}))
+    endpoint=base+"/"+path.lstrip("/")
+    ticket=model_spend.reserve(endpoint,payload) if path=="chat/completions" else None
+    req=request.Request(endpoint,None if payload is None else json.dumps(payload).encode(),headers)
     try:
-        with request.build_opener(*handlers).open(req,timeout=timeout) as response:
-            return json.load(response)
+        with transport.open_provider(req,timeout) as response:
+            result=json.load(response)
+        model_spend.settle(ticket,result)
+        return result
     except HTTPError as exc:
         labels={401:"密钥未通过认证",403:"账号没有该服务权限",404:"模型或接口未找到",429:"服务商限流或额度不足"}
         raise RequestError(502,f"云端 HTTP {exc.code} · "+labels.get(exc.code,"请求未成功")) from exc
@@ -202,11 +202,13 @@ def run(cmd,timeout=60):
 
 
 def analyze_video(raw,brief):
-    if not raw or len(raw)>48*1024*1024: raise ValueError("视频最大为 48 MiB")
+    size=raw.stat().st_size if isinstance(raw,Path) else len(raw)
+    if not 0<size<=48*1024*1024: raise ValueError("视频最大为 48 MiB")
     if len(brief)>1000: raise ValueError("分析要求过长")
     with inference_slot(),tempfile.TemporaryDirectory() as folder:
         path=Path(folder)/"video"
-        path.write_bytes(raw)
+        if isinstance(raw,Path): path=raw
+        else: path.write_bytes(raw)
         meta=json.loads(run(["ffprobe","-v","error",*FORMATS,"-select_streams","v:0","-show_entries",
             "stream=width,height,duration:format=duration","-of","json",str(path)]))
         tracks=meta.get("streams",[])

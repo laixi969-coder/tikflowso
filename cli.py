@@ -8,13 +8,14 @@ from urllib import error, parse, request
 
 
 KINDS = ["products", "shops", "creators", "videos", "lives"]
+RANGE_FIELDS = [f"{edge}_{field}" for field in ("price","gmv","sales","followers","views") for edge in ("min","max")]
 COMMON = ["source", "market", "days", "date"]
 TOOLS = {
     "trend-study": ("查询近 28 日采样覆盖与未来一周的同曜日基线预测。", COMMON + ["group","topic"]),
     "markets": ("按相同窗口比较各市场的成交、覆盖与活跃对象。", COMMON),
     "meta": ("列出可见的数据源、市场和数据日期。", COMMON),
     "overview": ("查询市场的成交、曝光和达人概览。", COMMON),
-    "rankings": ("按对象类别和条件查询榜单。", COMMON + ["kind", "sort", "category", "segment", "q", "match", "page", "limit"]),
+    "rankings": ("按对象类别和条件查询榜单。", COMMON + ["kind", "sort", "category", "segment", "q", "match", "page", "limit"] + RANGE_FIELDS),
     "detail": ("获取对象档案、指标趋势和相关对象。", COMMON + ["kind", "id"]),
     "trends": ("汇总市场内的类目、话题、配乐、关键词或脚本。", COMMON + ["group"]),
 }

@@ -9,6 +9,7 @@ from urllib.request import Request
 
 import analytics
 import feeds
+import workspace
 from datetime import datetime, timezone
 
 
@@ -20,11 +21,14 @@ class LicensedFeedTests(unittest.TestCase):
         self.drop = self.root / "delivery"
         self.drop.mkdir()
         self.cfg = self.root / "feeds.json"
-        self.cfg.write_text(json.dumps([{"id":"license","source":"ws-1-license","directory":str(self.drop)}]))
+        self.cfg.write_text(json.dumps([{"id":"license","source":"ws-1-license","owner":1,"directory":str(self.drop)}]))
         self.db = sqlite3.connect(":memory:")
         self.addCleanup(self.db.close)
         self.db.row_factory = sqlite3.Row
         self.db.executescript(analytics.SCHEMA)
+        workspace.init(self.db)
+        self.db.execute("INSERT INTO users(id,email,name) VALUES(1,'owner@example.invalid','Owner')")
+        self.db.commit()
 
     def sync(self, force=True):
         return feeds.sync_configured(self.db,force=force,config_path=self.cfg)

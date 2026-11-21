@@ -64,10 +64,12 @@ def claim(db,user,path,code):
     if (not access(db,user)["initial_setup"] or not token.is_file()
         or not isinstance(code,str) or not hmac.compare_digest(token.read_bytes().strip(),code.strip().encode())):
         raise ws.RequestError(403,"初始化码无效或管理员已绑定")
+    from account_security import provision
+    credentials=provision(db,user["id"])
     db.execute("INSERT INTO platform_admins VALUES(?)",(user["id"],))
     db.commit()
     token.unlink(missing_ok=True)
-    return {"ok":True}
+    return {"ok":True,"enrollment":credentials}
 
 
 def require(db,user):
@@ -195,7 +197,8 @@ def launch(db,connect,path,user,data):
         results=[]
         status="passed"
         error=None
-        with control_settings.pin(conf),closing(connect()) as writer:
+        from model_spend import scope
+        with control_settings.pin(conf),scope(connect,ws.workspace(user)),closing(connect()) as writer:
             try:
                 if kind=="sync":
                     out=connections.sync_one(name,directory=directory(path))

@@ -19,11 +19,11 @@ export async function renderAdmin(root){
     root.innerHTML='<section class="panel ca-gate"><h2>平台管理员登录</h2>'+(me.guest?'<p>请先登录要用于管理此部署的账户。</p><a class="btn primary" href="#account">登录或注册</a>':access.initial_setup?
       '<form><label>首次绑定初始化码<input type="password" name="code" required autocomplete="off"></label><p>初始化码位于部署主机数据库旁的 <code>*.admin-setup.txt</code> 文件。</p><button class="btn primary">绑定当前账户</button><output role="status"></output></form>':'<p>当前账户没有平台管理权限。</p><a class="btn" href="#account">返回账户设置</a>')+'</section>';
     const form=root.querySelector('form');
-    if(form)form.onsubmit=async ev=>{ev.preventDefault();try{await api('claim',{code:form.elements.code.value});await renderAdmin(root);}catch(err){form.querySelector('output').textContent=err.message;}};
+    if(form)form.onsubmit=async ev=>{ev.preventDefault();try{const result=await api('claim',{code:form.elements.code.value});await renderAdmin(root);const box=document.createElement('section');box.className='panel';const info=document.createElement('pre');info.textContent='请将密钥添加到验证器，并离线保存一次性恢复码。此处仅显示一次。\n'+result.enrollment.secret+'\n'+result.enrollment.recovery_codes.join('\n');const close=document.createElement('button');close.className='btn';close.textContent='已保存，关闭';close.onclick=()=>box.remove();box.append(info,close);root.prepend(box);}catch(err){form.querySelector('output').textContent=err.message;}};
     return;
   }
   let config=await api('settings'), selected=config.providers.some(p=>p.name===config.active)?config.active:'bailian';
-  let tab='providers',prompt=config.prompts[0].name,records=(await api('jobs')).items,timer=0,weekly=null;
+  let tab='providers',prompt=config.prompts[0].name,records=(await api('jobs')).items,timer=0,weekly=null,ops=null;
   let message='',busy=false,watchId=null;
   const provider=()=>config.providers.find(p=>p.name===selected);
   const stamp=()=>config.revision;
@@ -54,8 +54,17 @@ export async function renderAdmin(root){
     if(box)box.innerHTML=history(tab==='history'?records:records.filter(r=>r.provider===selected).slice(0,5));
   }
   function draw(){
-    root.innerHTML='<div class="ca-tabs" aria-label="后台导航">'+Object.entries({providers:'供应商配置',prompts:'提示词',history:'运行记录',weekly:'研究周报'}).map(([k,v])=>'<button class="btn" aria-pressed="'+(tab===k)+'" data-tab="'+k+'">'+v+'</button>').join('')+'</div><output class="ca-message" data-message role="status">'+e(message)+'</output>'+(tab==='providers'?providers():tab==='prompts'?prompts():tab==='weekly'?weeklyReport():'<section class="panel ca-editor"><h2>运行记录</h2><div data-jobs></div></section>');
+    root.innerHTML='<div class="ca-tabs" aria-label="后台导航">'+Object.entries({providers:'供应商配置',prompts:'提示词',history:'运行记录',weekly:'研究周报',operations:'运行与审计'}).map(([k,v])=>'<button class="btn" aria-pressed="'+(tab===k)+'" data-tab="'+k+'">'+v+'</button>').join('')+'<a class="btn" href="#tools?tool=capacity-review">监控额度审批</a><a class="btn" data-support-inbox href="#resources?section=support-inbox">'+localMessage('支持工单')+'</a></div><output class="ca-message" data-message role="status">'+e(message)+'</output>'+(tab==='providers'?providers():tab==='prompts'?prompts():tab==='weekly'?weeklyReport():tab==='operations'?operationsView():'<section class="panel ca-editor"><h2>运行记录</h2><div data-jobs></div></section>');
     showJobs();
+  }
+  function operationsView(){
+    if(!ops)return '';
+    const section=(title,items)=>'<details><summary>'+title+'</summary><pre>'+e(JSON.stringify(items,null,2))+'</pre></details>';
+    const retry=(kind,id,channel='')=>'<button class="btn" data-retry-kind="'+kind+'" data-retry-id="'+e(id)+'" data-channel="'+e(channel)+'">重新投递 '+e(id)+'</button>';
+    return '<section class="panel"><h2>运行与审计</h2>'+section('HTTP 状态和延迟分布（毫秒）',[ops.requests_by_status,ops.request_ms_histogram])+
+      section('队列和维护', [ops.jobs,ops.maintenance])+section('云模型费用（百万分之一美元）',ops.spend)+section('异常',ops.errors)+
+      section('账单事件',ops.billing)+ops.billing.filter(x=>x.state==='failed').map(x=>retry('billing',x.event)).join('')+
+      section('通知失败',ops.notifications)+ops.notifications.filter(x=>x.status==='failed').map(x=>retry('notification',x.aid,x.channel)).join('')+section('失败导出',ops.failed_exports)+ops.failed_exports.map(x=>retry('export',x.job)).join('')+section('最近访问',ops.audit)+'</section>';
   }
   function weeklyReport(){
     const pct=value=>value==null?'—':value+'%';
@@ -85,6 +94,10 @@ export async function renderAdmin(root){
   }
   root.onclick=event=>{
     const btn=event.target.closest('button');if(!btn)return;
+    if(btn.dataset.tab==='operations'||btn.dataset.retryKind){
+      perform(async()=>{if(btn.dataset.retryKind)await api('retry',btn.dataset.retryKind==='billing'?{event:btn.dataset.retryId}:btn.dataset.retryKind==='export'?{job:Number(btn.dataset.retryId)}:{aid:Number(btn.dataset.retryId),channel:btn.dataset.channel});
+        ops=await api('operations');tab='operations';draw();});return;
+    }
     if(btn.dataset.tab==='weekly'){perform(async()=>{weekly=await api('weekly');tab='weekly';message='';draw();});return;}
     if(btn.dataset.tab||btn.dataset.provider){if(busy)return;message='';if(btn.dataset.tab)tab=btn.dataset.tab;else selected=btn.dataset.provider;draw();return;}
     if(btn.dataset.report){

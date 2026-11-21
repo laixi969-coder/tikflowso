@@ -18,7 +18,7 @@ env.DASHSCOPE_API_KEY='';
 env.TIKFLOWSO_ENV_FILE=path.join(dir,'isolated.env');
 const drop=path.join(dir,'delivery');fs.mkdirSync(drop);
 env.TIKFLOWSO_FEEDS=path.join(dir,'feeds.json');
-fs.writeFileSync(env.TIKFLOWSO_FEEDS,JSON.stringify([{id:'local-check',source:'delivery-qa',directory:drop,
+fs.writeFileSync(env.TIKFLOWSO_FEEDS,JSON.stringify([{id:'local-check',source:'delivery-qa',shared:true,directory:drop,
   daily_delivery:{markets:['GB'],due_utc:'12:00',lag_days:1}}]));
 const server=spawn('python3',['server.py','--db',db,'--port','0'],{cwd:root,env,stdio:['ignore','pipe','inherit']});
 const run=(cmd,args)=>execFileSync(cmd,args,{cwd:root,env,stdio:['ignore','pipe','pipe']});
@@ -34,6 +34,157 @@ async function main(){
     const output=page.locator('output');
     const waitText=async s=>page.getByText(s,{exact:false}).first().waitFor({timeout:60000});
     await go('#dashboard');await page.locator('.records tbody tr').first().waitFor();
+    const boardPage='#dashboard?market=GB&source=demo&days=14&date=2026-11-15';
+    const browse=await browser.newPage({viewport:{width:1280,height:850}});
+    try {
+      const visitLinks=async(start,selector)=>{
+        await browse.goto(base+'/'+start);
+        await browse.locator(selector).first().waitFor();
+        const hashes=await browse.locator(selector).evaluateAll(links=>[...new Set(links.map(a=>a.hash))]);
+        for(const hash of hashes){
+          await browse.locator(selector).and(browse.locator('a[href="'+hash+'"]')).first().click();
+          await browse.waitForURL(url=>url.hash===hash);
+          await browse.locator('.workspace-content').waitFor();
+          await browse.waitForFunction(()=>!document.querySelector('.workspace-content .loading') &&
+            document.querySelector('.workspace-content')?.innerText.trim().length>0);
+          assert.equal(await browse.locator('.page .error, .workspace-content [data-retry]').count(),0,hash);
+          await browse.goto(base+'/'+start);await browse.locator(selector).first().waitFor();
+        }
+        return hashes.length;
+      };
+      const shortcuts=await visitLinks(boardPage,'.board-shortcut');
+      assert.equal(shortcuts,12);
+      const footer=await visitLinks(boardPage,'#resource-links a');
+      const creative=await visitLinks('#creative','.tf-tool');
+      const tools=await visitLinks('#tools','.tf-tool');
+      assert.ok(footer>=5 && creative>=8 && tools>=12);
+      console.log('PASS opened '+shortcuts+' board shortcuts, '+footer+' footer links, '+creative+' AI tools and '+tools+' tool entries in Chrome');
+      await browse.goto(base+'/#dashboard');
+      const market=browse.locator('[data-scope=market]');
+      await market.selectOption({label:'中国大陆'});
+      await browse.locator('.board-ranking a[href*="market=CN"]').first().waitFor();
+      assert.equal(await browse.locator('.kpi-label small').first().textContent(),'CNY');
+      assert.match(await browse.locator('.kpi-value').first().textContent(),/^¥/);
+      await browse.reload();
+      await browse.locator('.board-ranking a[href*="market=CN"]').first().waitFor();
+      assert.equal(await market.inputValue(),'CN');
+      await browse.locator('[data-nav=markets]').click();
+      await browse.locator('.group-link[href*="market=CN"]').waitFor();
+      await browse.locator('[data-locale-toggle]').click();
+      await browse.getByRole('link',{name:'Mainland China CN'}).click();
+      await browse.locator('.record[href*="market=CN"]').first().waitFor();
+      assert.equal(await market.locator('option:checked').textContent(),'Mainland China');
+      const fileReady=browse.waitForEvent('download');
+      await browse.locator('[data-export]').click();
+      const csv=fs.readFileSync(await (await fileReady).path(),'utf8').trim().split(/\r?\n/).slice(1);
+      assert.ok(csv.length && csv.every(line=>line.startsWith('CN,demo,') && line.split(',')[4]==='CNY'));
+      console.log('PASS mainland China market selection, CNY overview, bilingual comparison, product ranking and CSV');
+    } finally {await browse.close();}
+    await go(boardPage);
+    await page.locator('.board-ranking a[href*="market=GB"]').first().waitFor();
+    assert.equal(await page.locator('.board-shortcut').count(),12);
+    assert.equal(await page.locator('.board-ranking').count(),6);
+    for (const anchor of await page.locator('.board-ranking .text-link').all()) {
+      const target = new URL(await anchor.getAttribute('href'),base).hash.slice(1);
+      const [kind,query] = target.split('?'), filters=new URLSearchParams(query);
+      assert.equal(filters.get('days'),'14');assert.equal(filters.get('date'),'2026-11-15');
+      filters.set('kind',kind);filters.set('limit',5);
+      const items=(await (await page.request.get(base+'/api/rankings?'+filters)).json()).items;
+      const ids=await anchor.locator('xpath=ancestor::section').locator('a.record').evaluateAll(links=>links.map(a=>new URLSearchParams(a.hash.split('?')[1]).get('id')));
+      assert.deepEqual(ids,items.filter(r=>r[filters.get('sort')]!=null).map(r=>r.id));
+    }
+    const nameButton=page.locator('.board-ranking [data-translate-name]').first();
+    const sourceName=await nameButton.getAttribute('data-translate-name');
+    await nameButton.click();
+    const translation=page.locator('dialog.text-translation');
+    await translation.getByText('文本翻译待配置，请管理员启用文本模型。').waitFor();
+    assert.equal(await translation.locator('textarea').inputValue(),sourceName);
+    assert.ok(await translation.locator('.primary').isDisabled());
+    await translation.getByRole('button',{name:'关闭'}).click();
+    assert.equal(await nameButton.getAttribute('data-translate-name'),sourceName);
+    await page.locator('[data-translate-board]').click();
+    assert.deepEqual((await translation.locator('textarea').inputValue()).split('\n'),
+      await page.locator('.board-ranking [data-translate-name]').evaluateAll(nodes=>nodes.map(b=>b.dataset.translateName)));
+    await translation.getByRole('button',{name:'关闭'}).click();
+    const unavailable=await page.request.post(base+'/api/generate',{data:{tool:'text_translate',text:sourceName,target:'en'}});
+    assert.equal(unavailable.status(),503);
+    assert.equal((await unavailable.json()).error,'文本翻译待配置，请管理员启用文本模型。');
+    await page.locator('.board-ranking .text-link[href^="#lives?"]').click();
+    const live=page.locator('a.record[href*="id=l01&"]').first();await live.click();
+    const productAnalysis=page.locator('.live-analysis').filter({hasText:'直播商品分析'});
+    const product=productAnalysis.locator('a[href*="kind=products"]');
+    assert.match(await product.first().getAttribute('href'),/market=GB/);
+    const similar=page.locator('.live-analysis').filter({hasText:'相似直播场次'}).locator('a.related-card');
+    assert.ok(await similar.count());
+    assert.ok(!(await similar.first().getAttribute('href')).includes('id=l01&'));
+    await page.getByText('所选周期没有供应商时点观测').waitFor();
+    await similar.first().click();
+    await page.locator('.live-analysis').first().waitFor();
+    await go(boardPage);
+    const inline=page.locator('.board-live'), secondRoom=inline.locator('[data-board-room]').nth(1);
+    const chosen=await secondRoom.getAttribute('data-board-room');
+    await secondRoom.click();
+    await inline.locator('[data-preview-room="'+chosen+'"]').waitFor();
+    assert.equal(await secondRoom.getAttribute('aria-pressed'),'true');
+    assert.equal(await inline.locator('.live-products li').count(),3);
+    const sales=await inline.locator('.live-products li b').allTextContents();
+    assert.deepEqual(sales.map(Number),sales.map(Number).sort((a,b)=>b-a));
+    assert.equal(await inline.locator('.live-viewers circle').count(),5);
+    const inlineDetail=inline.locator('[data-live-detail]');
+    const parsed=new URLSearchParams((await inlineDetail.getAttribute('href')).split('?')[1]);
+    assert.deepEqual(['market','source','date','days','id'].map(k=>parsed.get(k)),['GB','demo','2026-11-15','14',chosen]);
+    await inline.locator('a[href*="kind=creators"]').first().waitFor();
+    const similarRoom=inline.locator('.live-preview a[href*="kind=lives"]:not([data-live-detail])').first();
+    await similarRoom.click();
+    await page.locator('.live-analysis').first().waitFor();
+    await go('#dashboard?market=JP&source=demo&days=7&date=2026-11-15');
+    await page.locator('.board-live').getByText('所选市场与日期没有直播场次').waitFor();
+    await go(boardPage);await page.locator('.board-ranking').first().waitFor();
+    const category=await page.locator('[data-field=category] option').nth(1).getAttribute('value');
+    await page.locator('[data-field=category]').selectOption(category);
+    await page.locator('.chart-card h2').filter({hasText:category}).waitFor();
+    const reportReady=page.waitForEvent('download');await page.locator('[data-market-report]').click();
+    const report=fs.readFileSync(await (await reportReady).path(),'utf8');
+    assert.ok(report.includes('GBP')&&report.includes(category)&&report.includes('demo')&&report.includes('覆盖天数'));
+    await page.locator('#search-page [name=q]').fill('p01');
+    await page.locator('#search-page [data-field=search-kind]').selectOption('products');
+    await page.locator('#search-page [data-field=match]').selectOption('exact');
+    await page.locator('#search-page .primary').click();await page.locator('.search-result a.record').first().waitFor();
+    assert.equal(new URLSearchParams(new URL(page.url()).hash.split('?')[1]).get('match'),'exact');
+    await go('#tools');
+    await page.locator('a.tf-tool[href*="tool=text_translate"]').click();
+    await page.locator('.text-translator output').getByText('文本翻译待配置，请管理员启用文本模型。').waitFor();
+    await page.locator('.translation-form textarea').fill('Blue cup');
+    assert.ok(await page.locator('.translation-form button').isDisabled());
+    await go(boardPage);await page.locator('#board-question input').fill('哪个商品销量最高？');
+    await page.locator('#board-question button').click();await page.locator('.board-answer a[href*="market=GB"]').first().waitFor();
+    assert.ok(page.url().includes('#dashboard'));
+    await page.locator('.board-open-chat').click();await page.locator('[data-turns] a[href*="market=GB"]').first().waitFor();
+    const chatId=await page.locator('[data-history]').inputValue();
+    await page.locator('[data-new]').click();assert.equal(await page.locator('[data-turns] article').count(),0);
+    await page.reload();await page.locator('[data-history]').selectOption(chatId);
+    await page.locator('[data-turns] h3').filter({hasText:'哪个商品销量最高？'}).waitFor();
+    await page.locator('[data-question]').last().click();await page.locator('[data-turns] article').nth(1).waitFor();
+    const stranger=await browser.newContext();
+    try {assert.equal((await stranger.request.get(base+'/api/assistant/chats?chat='+chatId)).status(),404);}
+    finally {await stranger.close();}
+    await go('#plans');await page.locator('.tf-panel h2').filter({hasText:'TEAM'}).waitFor();
+    assert.match(await page.locator('.tf-panel').filter({hasText:'TEAM'}).innerText(),/60000/);
+    await page.locator('#search-button').click();await page.locator('#query').fill('p01');
+    await page.locator('#search-options [data-field="search-kind"]').selectOption('products');
+    await page.locator('#search-options [data-field="match"]').selectOption('exact');
+    await page.locator('#global-search button.primary').click();await page.locator('.search-result a.record').first().waitFor();
+    assert.ok(page.url().includes('match=exact')&&page.url().includes('kind=products'));
+    await page.locator('#menu-btn').click();assert.equal(await page.locator('#menu-btn').getAttribute('aria-expanded'),'false');
+    await page.reload();await page.locator('.search-result').first().waitFor();
+    assert.equal(await page.locator('#menu-btn').getAttribute('aria-expanded'),'false');
+    await page.locator('#menu-btn').click();assert.equal(await page.locator('#menu-btn').getAttribute('aria-expanded'),'true');
+    console.log('PASS scoped market report, guest plan entitlements, global exact search and private chat history');
+    await go(boardPage);await page.setViewportSize({width:390,height:844});await page.locator('.board-list').waitFor();
+    assert(await page.evaluate(()=>document.documentElement.scrollWidth<=window.innerWidth));
+    await page.setViewportSize({width:1280,height:850});await go('#dashboard?market=US&source=demo&days=7&date=2026-11-19');
+    await page.locator('.board-ranking a[href*="market=US"]').first().waitFor();
+    console.log('PASS board shortcuts, per-metric rankings and drill-down scope, category dashboard, search, assistant and narrow layout');
     await page.locator('[data-scope=market]').selectOption('GB');
     await page.locator('.kpi-label').filter({hasText:'GBP'}).first().waitFor();
     await page.locator('[data-scope=market]').selectOption('US');
@@ -71,6 +222,27 @@ async function main(){
     await file.waitFor();const downloaded=page.waitForEvent('download');await file.click();
     assert.match(fs.readFileSync(await (await downloaded).path(),'utf8'),/follower_growth/);
     console.log('PASS ranked export queue and CSV download');
+    await go('#products?market=US&days=7&date=2026-11-19');
+    await page.locator('.research-filters summary').click();
+    await page.locator('#ranking-ranges [name=min_price]').fill('999999');
+    await page.locator('#ranking-ranges button[type=button]').first().waitFor();
+    await page.getByRole('button',{name:'应用区间'}).click();
+    await page.locator('.empty').waitFor();
+    await page.locator('#ranking-preset input').fill('High price fixture');
+    await page.getByRole('button',{name:'保存当前已应用条件'}).click();
+    await page.getByRole('link',{name:'High price fixture'}).waitFor();
+    await page.getByRole('button',{name:'清除区间'}).click();
+    await page.locator('.records .record').first().waitFor();
+    await page.locator('.research-filters summary').click();
+    await page.getByRole('link',{name:'High price fixture'}).click();
+    await page.locator('.empty').waitFor();
+    assert.equal(await page.locator('#ranking-ranges [name=min_price]').inputValue(),'999999');
+    await page.getByRole('button',{name:'删除方案'}).click();
+    await page.getByRole('link',{name:'High price fixture'}).waitFor({state:'detached'});
+    await go('#detail?kind=products&id=p01');
+    await page.locator('[data-field=chart]').selectOption('price');
+    await page.locator('svg.plot[aria-label*="标价"] .chart-target').first().waitFor();
+    console.log('PASS numeric range, saved filter reopen and delete, product price history');
     const started=Date.now();
     await go('#products?market=US&source=demo&days=14&date=2026-11-15&sort=sales');
     await page.locator('.record').first().click();await page.locator('[data-save]').click();await waitText('已加入收藏');
@@ -99,6 +271,22 @@ async function main(){
     await page.locator('[data-threshold]').first().click();await waitText('已达到阈值');
     await page.getByRole('link',{name:'查看监控通知 →'}).click();await page.locator('[data-seen]').first().click();await waitText('已读');
     console.log('PASS persisted monitor alert and read state');
+    await go('#monitor?task_kind=videos&task_state=active');
+    const newTask=page.locator('details').filter({has:page.getByText('新建监控',{exact:true})});
+    await newTask.locator('summary').click();
+    const finder=page.locator('[data-action=find-monitor]'), starter=page.locator('[data-action=start-monitor]');
+    await finder.locator('[name=query]').fill('missing-monitor-demo');await finder.locator('button').click();
+    await waitText('没有匹配的对象');
+    await finder.locator('[name=query]').fill('v01');await finder.locator('button').click();
+    await starter.locator('[name=id]').waitFor();await starter.locator('[name=threshold]').fill('5');
+    await starter.locator('button').click();await page.locator('[data-status]').first().click();
+    await page.locator('[data-task-state]').selectOption('completed');
+    await page.locator('[data-th]').first().fill('8');await page.locator('[data-threshold]').first().click();
+    await waitText('恢复监控');assert.equal(await page.locator('[data-th]').first().inputValue(),'8');
+    await page.locator('[data-status]').first().click();await waitText('当前条件下没有监控任务。');
+    await page.locator('[data-task-state]').selectOption('active');await page.locator('[data-delete]').first().click();
+    await waitText('当前条件下没有监控任务。');
+    console.log('PASS monitor center typed lookup, create, complete, edit threshold, resume and remove');
     await go('#tools?tool=transcribe');
     const speech=path.join(dir,'sound.aiff'),video=path.join(dir,'clip.mp4');
     run('say',['-v','Samantha','-o',speech,'The green bottle is on the kitchen table. Today we are testing the sound quality.']);
@@ -108,6 +296,15 @@ async function main(){
     await waitText('green bottle');assert.match(await output.innerText(),/kitchen table/i);
     const srt=page.waitForEvent('download');await page.getByText('下载 SRT 字幕').click();
     assert.match(fs.readFileSync(await (await srt).path(),'utf8'),/00:00:00,000 --> /);
+    await page.getByRole('button',{name:'用转写稿拆解或改写'}).click();
+    const draft=page.locator('[data-action=gen]');
+    await draft.locator('[name=script_mode]').selectOption('rewrite');
+    assert.match(await draft.locator('textarea').inputValue(),/green bottle/i);
+    await draft.locator('textarea').fill('1\n00:00:00,000 --> 00:00:03,000\n嗯，今天试用 500 毫升水杯。它不保温。');
+    await draft.locator('[type=submit]').click();await waitText('本地改写模板');
+    assert.match(await draft.locator('output').innerText(),/500 毫升水杯/);assert.match(await draft.locator('output').innerText(),/不保温/);
+    assert.doesNotMatch(await draft.locator('output').innerText(),/-->|嗯，/);
+    console.log('PASS transcript handoff and offline rewrite preserving quantity and negation');
     await go('#tools?tool=video');await page.locator('[name=media]').setInputFiles(video);
     assert.equal(await page.locator('[name=method]').inputValue(),'preview');
     await page.getByRole('button',{name:'生成结果'}).click();await waitText('本机分镜');
@@ -136,6 +333,22 @@ async function main(){
     run('python3',['feeds.py','--db',db,'--config',env.TIKFLOWSO_FEEDS]);
     await go('#resources');
     await waitText('交付时效');
+    for(const kind of ['products','shops','creators','videos','lives']){
+      await page.locator('[data-guide="'+kind+'"]').click();
+      const rank=page.locator('[data-guide-ranking]');
+      await page.locator('[data-guide-detail="'+kind+'"]').waitFor();
+      assert.ok((await rank.getAttribute('href')).startsWith('#'+kind+'?'));
+      assert.equal(new URLSearchParams((await rank.getAttribute('href')).split('?')[1]).get('market'),'US');
+    }
+    await page.locator('[data-guide-detail=lives]').click();
+    await page.waitForURL(/#detail\?[^#]*kind=lives/);
+    await go('#resources?guide=shops');await page.locator('[data-locale-toggle]').click();
+    await page.getByText('Find a shop by name and select local, cross-border or S shops to narrow the list.').waitFor();
+    await page.getByRole('link',{name:'Open library'}).click();await page.locator('.records .record').first().waitFor();
+    await go('#resources?guide=tools');await page.locator('[data-locale-toggle]').click();
+    await page.locator('.tf-guide a[href*="tool=calc"]').click();await waitText('19.00');
+    await go('#resources');await waitText('交付时效');
+    console.log('PASS five scoped library and ranking guides, live detail, English shop guide and fee calculator link');
     const counters=page.locator('[data-action=counters]');
     await counters.locator('[name=file]').setInputFiles({name:'counter.csv',mimeType:'text/csv',buffer:Buffer.from(
       'market,kind,id,name,date,cumulative_gmv,cumulative_sales\nGB,shops,shop,Shop,2026-11-01,10.25,2\nGB,shops,shop,Shop,2026-11-02,11.75,4')});
@@ -158,6 +371,22 @@ async function main(){
     assert.equal(await upload('revised.csv',csv.replace(',10,2',',20,2')),200);
     await waitText('revised.csv');await page.locator('summary').filter({hasText:'2026-10-01'}).first().click();await waitText('gmv_units');
     console.log('PASS import failures, non-US CSV drill-down and before/after revision history');
+    const catalog='market,kind,id,name,date,gmv,sales,category\n'+[
+      'US,products,black,Black Tea,2026-10-01,1,1,Goods > Tea > Black',
+      'US,products,green,Green Tea,2026-10-01,2,1,Goods > Tea > Green',
+      'US,products,teak,Teak Wood,2026-10-01,3,1,Goods > Teak'].join('\n');
+    assert.equal(await upload('catalog.csv',catalog),200);
+    await page.locator('a[href^="#products?"][href*="market=US"]').filter({hasText:'查看导入结果'}).click();
+    const level=i=>page.locator('.library [data-field=category]').nth(i);
+    await level(0).selectOption('Goods'); await level(1).selectOption('Goods > Tea');
+    await level(2).waitFor();
+    assert.equal(await page.locator('.library tbody tr').count(),2);
+    await level(2).selectOption('Goods > Tea > Black'); await page.waitForFunction(
+      ()=>document.querySelectorAll('.library tbody tr').length===1);
+    assert.match(await page.locator('.library tbody').innerText(),/Black Tea/);
+    await level(2).selectOption('Goods > Tea'); await page.waitForFunction(
+      ()=>document.querySelectorAll('.library tbody tr').length===2);
+    console.log('PASS three-level catalog drill-down, prefix boundary, and parent reset');
     run('python3',['-c',`import sqlite3,sys,time
 with sqlite3.connect(sys.argv[1]) as db:
  uid=db.execute("select id from users where email='review@test.invalid'").fetchone()[0]

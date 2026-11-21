@@ -66,7 +66,7 @@ class VisionTests(unittest.TestCase):
             try:
                 for name,(_,_,key) in vision.PROVIDERS.items():
                     prefix="TIKFLOWSO_"+name.upper()
-                    env={prefix+"_BASE_URL":f"http://127.0.0.1:{http.server_port}/{name}",prefix+"_MODEL":"sample-model",key:"fixture-"+name}
+                    env={"TIKFLOWSO_TRUST_LOCAL_MODEL":"1",prefix+"_BASE_URL":f"http://127.0.0.1:{http.server_port}/{name}",prefix+"_MODEL":"sample-model",key:"fixture-"+name}
                     with patch.dict(os.environ,env,clear=True),patch.object(connections,"ROOT",Path(tmp)):
                         result=connections.sync_one(name)
                         self.assertTrue(result["listed"])

@@ -1,7 +1,11 @@
 **
+!/requirements.lock
+!/build/
+!/build/extract_sqlite.py
 !/*.py
 /test*.py
 /deploy.py
+/replica.py
 !/web/
 !/web/**
 !/extension/

@@ -59,8 +59,8 @@ def dispute(db,mode,case_id,charge,amount,action,note):
     note=ws.ident(note,500)
     case_id=ws.ident(case_id,160)
     if not db.in_transaction: db.execute("BEGIN IMMEDIATE")
-    parent=db.execute("SELECT amount FROM partner_ledger WHERE mode=? AND entry=? AND charge=?",(mode,charge,charge)).fetchone()
-    if not parent or amount>parent[0]: raise ValueError("原实收记录不存在或争议金额超过实收")
+    parent=db.execute("SELECT COALESCE((SELECT captured FROM captured_charges WHERE mode=? AND charge=?),SUM(amount)) FROM partner_ledger WHERE charge=? AND mode=? AND amount>0",(mode,charge,charge,mode)).fetchone()
+    if not parent or not parent[0] or amount>parent[0]: raise ValueError("原实收记录不存在或争议金额超过实收")
     old=db.execute("SELECT * FROM partner_disputes WHERE mode=? AND case_id=?",(mode,case_id)).fetchone()
     if old and (old["charge"]!=charge or old["amount"]!=amount): raise ValueError("争议编号与原记录不匹配")
     if old and (old["status"]==action or action=="reopen" and old["status"]=="open"): return
@@ -92,17 +92,24 @@ def statement(db,uid,params):
     month=params.get("month") or datetime.now(timezone.utc).strftime("%Y-%m")
     if mode not in ("test","live") or not re.fullmatch(r"[0-9]{4}-(?:0[1-9]|1[0-2])",month):
         raise ValueError("请选择有效的账期及环境")
-    rows=db.execute("""WITH events AS (
+    # One provider dispute applies once per charge, including split invoice payments.
+    db.create_function('charge_share',3,lambda delta,part,total: (1 if delta>=0 else -1)*(abs(delta)*part//total),deterministic=True)
+    parents="""SELECT p.mode,p.charge,p.partner,MIN(p.invoice) AS invoice,MIN(p.currency) AS currency,
+        MIN(p.bps) AS bps,MIN(p.occurred) AS occurred,SUM(p.amount) AS eligible,
+        COALESCE(MAX(cc.captured),SUM(p.amount)) AS captured FROM partner_ledger p
+        LEFT JOIN captured_charges cc ON cc.mode=p.mode AND cc.charge=p.charge
+        WHERE p.amount>0 GROUP BY p.mode,p.charge,p.partner"""
+    rows=db.execute(f"""WITH parents AS ({parents}), events AS (
       SELECT invoice,charge,entry,currency,amount,bps,occurred FROM partner_ledger WHERE partner=? AND mode=?
-      UNION ALL SELECT p.invoice,p.charge,'dispute:'||d.case_id||':'||printf('%020d',c.seq),p.currency,c.delta,p.bps,c.stamp
+      UNION ALL SELECT p.invoice,p.charge,'dispute:'||d.case_id||':'||printf('%020d',c.seq),p.currency,charge_share(c.delta,p.eligible,p.captured),p.bps,c.stamp
       FROM dispute_changes c JOIN partner_disputes d ON d.mode=c.mode AND d.case_id=c.case_id
-      JOIN partner_ledger p ON p.mode=d.mode AND p.entry=d.charge AND p.charge=d.charge
+      JOIN parents p ON p.mode=d.mode AND p.charge=d.charge
       WHERE d.mode=? AND p.partner=? AND c.delta!=0
     ), balances AS (
-      SELECT *,SUM(amount) OVER(PARTITION BY charge ORDER BY occurred,(entry!=charge),entry ROWS UNBOUNDED PRECEDING) AS net FROM events)
+      SELECT *,SUM(amount) OVER(PARTITION BY charge ORDER BY occurred,(amount<0),entry ROWS UNBOUNDED PRECEDING) AS net FROM events)
     SELECT invoice,charge,entry,currency,MAX(net,0)-MAX(net-amount,0) AS amount,bps,occurred,
       (MAX(net,0)*bps/10000)-(MAX(net-amount,0)*bps/10000) AS commission FROM balances
-    WHERE strftime('%Y-%m',occurred,'unixepoch')=? ORDER BY occurred,(entry!=charge),entry""",(uid,mode,mode,uid,month))
+    WHERE strftime('%Y-%m',occurred,'unixepoch')=? ORDER BY occurred,(amount<0),entry""",(uid,mode,mode,uid,month))
     items=[dict(r) for r in rows]
     totals={}
     for r in items:
@@ -112,13 +119,12 @@ def statement(db,uid,params):
         FROM partner_disputes d JOIN partner_ledger p ON p.mode=d.mode AND p.charge=d.charge
         WHERE p.partner=? AND p.mode=? AND (strftime('%Y-%m',p.occurred,'unixepoch')=?
         OR strftime('%Y-%m',d.closed,'unixepoch')=?) ORDER BY case_id""",(uid,mode,month,month))]
-    notices=db.execute("""WITH latest AS (
+    notices=db.execute(f"""WITH parents AS ({parents}), latest AS (
       SELECT e.*,ROW_NUMBER() OVER(PARTITION BY case_id ORDER BY e.occurred DESC,
         (provider_status IN ('lost','won','warning_closed','prevented')) DESC,event DESC) AS seq
       FROM processor_dispute_events e WHERE mode=?)
       SELECT e.case_id,e.charge,e.provider_status,e.amount,e.currency,e.occurred,p.currency AS paid_currency,
-        d.status AS local_state,d.amount AS local_amount,d.charge AS local_charge FROM latest e JOIN partner_ledger p
-        ON p.mode=e.mode AND p.entry=e.charge AND p.charge=e.charge
+        d.status AS local_state,d.amount AS local_amount,d.charge AS local_charge FROM latest e JOIN parents p ON p.mode=e.mode AND p.charge=e.charge
         LEFT JOIN partner_disputes d ON d.case_id=e.case_id AND d.mode=e.mode
       WHERE e.seq=1 AND p.partner=? AND (strftime('%Y-%m',p.occurred,'unixepoch')=?
         OR strftime('%Y-%m',e.occurred,'unixepoch')=?) ORDER BY e.case_id""",(mode,uid,month,month))

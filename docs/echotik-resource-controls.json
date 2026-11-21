@@ -1,0 +1,21 @@
+{
+  "source": "https://echotik.live/guides",
+  "operation": "inspect_web_page",
+  "evidence_id": "ev_a15ece4d7984c22140f8a3aa54010f551cdcac35fe3fdfd39b2de72e8ca6ae59",
+  "client": "Chrome/157.0.8103.79",
+  "observed_sections": [
+    {
+      "role": "heading",
+      "name": "Alternatives"
+    },
+    {
+      "role": "heading",
+      "name": "Guides"
+    },
+    {
+      "role": "heading",
+      "name": "Free Tools"
+    }
+  ],
+  "scope": "Public resource hub headings from one guest browser visit."
+}
