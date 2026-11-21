@@ -1,0 +1,35 @@
+{
+  "name": {
+    "message": "tikflowso Research Assistant"
+  },
+  "description": {
+    "message": "Find the product, creator or video from the current TikTok page in your workspace."
+  },
+  "open": {
+    "message": "Find in workspace"
+  },
+  "workspace": {
+    "message": "Workspace address"
+  },
+  "loading": {
+    "message": "Reading the current tab…"
+  },
+  "unsupported": {
+    "message": "Open a TikTok product, creator or video page to use this extension."
+  },
+  "invalid": {
+    "message": "Enter an HTTPS workspace URL or a local HTTP URL."
+  },
+  "error": {
+    "message": "Could not read the current tab."
+  },
+  "creators": {
+    "message": "Creator"
+  },
+  "products": {
+    "message": "Product"
+  },
+  "videos": {
+    "message": "Video / photo"
+  }
+}

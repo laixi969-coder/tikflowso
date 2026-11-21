@@ -1,0 +1,40 @@
+[
+  {
+    "provider": "bailian",
+    "state": "pending_key",
+    "http": 401,
+    "selected": "qwen3.7-plus"
+  },
+  {
+    "provider": "volcengine",
+    "state": "failed",
+    "detail": "无法读取云端模型响应，请检查网络、端点和超时设置",
+    "transport_error": "SSLEOFError"
+  },
+  {
+    "provider": "openrouter",
+    "state": "catalog_synced",
+    "count": 476,
+    "selected": "qwen/qwen3.7-plus",
+    "listed": true,
+    "synced_at": 1795236525,
+    "base_url": "https://openrouter.ai/api/v1",
+    "authenticated": false
+  },
+  {
+    "provider": "atlas",
+    "state": "catalog_synced",
+    "count": 153,
+    "selected": "qwen/qwen3.7-plus",
+    "listed": true,
+    "synced_at": 1795236514,
+    "base_url": "https://api.atlascloud.ai/v1",
+    "authenticated": false
+  },
+  {
+    "provider": "deepseek",
+    "state": "failed",
+    "detail": "无法读取云端模型响应，请检查网络、端点和超时设置",
+    "transport_error": "SSLEOFError"
+  }
+]

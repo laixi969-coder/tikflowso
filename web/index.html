@@ -1,0 +1,70 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <meta name="theme-color" content="#103f33" />
+    <title>tikflowso · 市场工作台</title>
+    <link rel="icon" href="/assets/brand.svg" type="image/svg+xml" />
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <a class="skip" href="#main-content">跳到内容</a>
+    <aside id="sidebar">
+      <a class="brand" href="#dashboard"
+        ><img alt="" width="35" height="35" src="/assets/brand.svg" /><span
+          >tikflowso</span
+        ></a
+      >
+      <nav id="navigation" aria-label="工作区"></nav>
+      <div class="side-bottom"><a href="#account" id="identity"></a></div>
+    </aside>
+    <button class="veil" id="veil" aria-label="关闭导航"></button>
+    <div class="shell">
+      <header class="topbar">
+        <div class="breadcrumb">
+          <button
+            class="menu-btn iconbutton"
+            id="menu-btn"
+            aria-label="展开导航"
+          ></button
+          ><span class="crumb-root">工作空间</span
+          ><span class="crumb-sep">/</span><span id="crumb">市场概览</span>
+        </div>
+        <div class="header-acts">
+          <button class="site-search" id="search-button"></button
+          ><button type="button" class="locale-control" data-locale-toggle aria-label="Switch language">EN</button><span class="header-divider"></span
+          ><label class="source-switch" title="切换数据来源"
+            ><span class="dot"></span
+            ><select aria-label="数据来源" id="source"></select
+          ></label>
+        </div>
+      </header>
+      <main id="main-content" tabindex="-1">
+        <div id="app" aria-live="polite"></div>
+      </main>
+      <footer class="footer">
+        <span>tikflowso</span><span>TikTok Shop 数据工作台</span>
+      </footer>
+    </div>
+    <dialog id="search-dialog">
+      <form id="global-search">
+        <label for="query">全站搜索</label>
+        <div class="search-row">
+          <input
+            id="query"
+            type="search"
+            placeholder="输入商品、店铺、达人或内容名称"
+            required
+            maxlength="150"
+          /><button class="primary">搜索</button>
+        </div>
+        <button id="close-search" type="button" class="link-button">
+          关闭
+        </button>
+      </form>
+    </dialog>
+    <div id="toast" class="toast" role="status"></div>
+    <script type="module" src="/app.js"></script>
+  </body>
+</html>

@@ -1,0 +1,15 @@
+{
+  "manifest_version": 3,
+  "name": "__MSG_name__",
+  "version": "1.0.0",
+  "description": "__MSG_description__",
+  "permissions": [
+    "activeTab",
+    "storage"
+  ],
+  "action": {
+    "default_title": "__MSG_open__",
+    "default_popup": "popup.html"
+  },
+  "default_locale": "en"
+}

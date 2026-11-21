@@ -1,0 +1,35 @@
+{
+  "name": {
+    "message": "tikflowso 研究助手"
+  },
+  "description": {
+    "message": "将当前 TikTok 商品、达人或视频带入你的 tikflowso 工作区搜索。"
+  },
+  "open": {
+    "message": "在工作区查找"
+  },
+  "workspace": {
+    "message": "工作区地址"
+  },
+  "loading": {
+    "message": "正在识别当前标签页…"
+  },
+  "unsupported": {
+    "message": "请在 TikTok 商品、达人或视频详情页打开研究助手。"
+  },
+  "invalid": {
+    "message": "请填写 HTTPS 工作区地址或本机 HTTP 地址。"
+  },
+  "error": {
+    "message": "无法读取当前标签页。"
+  },
+  "creators": {
+    "message": "达人"
+  },
+  "products": {
+    "message": "商品"
+  },
+  "videos": {
+    "message": "视频 / 图文"
+  }
+}

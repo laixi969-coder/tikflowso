@@ -1,0 +1,75 @@
+{
+  "run": "protocol fixture; model outputs are simulated",
+  "model": "fixture-vision",
+  "images": {
+    "en": [
+      {
+        "box": [
+          0.07799432257190268,
+          0.25967590537727436,
+          0.3815113544464111,
+          0.11398152775234649
+        ],
+        "original": "Green Tea",
+        "translation": "绿茶"
+      },
+      {
+        "original": "No added sugar",
+        "box": [
+          0.07692933414300063,
+          0.5618733813147156,
+          0.4460467338562012,
+          0.12063583797878685
+        ],
+        "translation": "无添加糖"
+      }
+    ],
+    "zh": [
+      {
+        "box": [
+          0.07499999984552556,
+          0.24444444436553026,
+          0.315625,
+          0.13888888888888895
+        ],
+        "original": "蓝色水杯",
+        "translation": "Blue water cup"
+      },
+      {
+        "original": "容量 500毫升",
+        "box": [
+          0.07499999984237937,
+          0.5666666666203704,
+          0.384375,
+          0.10555555555555562
+        ],
+        "translation": "Capacity 500 ml"
+      }
+    ],
+    "empty": []
+  },
+  "video": {
+    "mode": "云端视觉模型 · fixture-vision",
+    "duration": 4,
+    "total_shots": 2,
+    "shots": [
+      {
+        "number": 1,
+        "start": 0,
+        "end": 2,
+        "subject": "红色方块",
+        "action": "静止",
+        "composition": "居中"
+      },
+      {
+        "number": 2,
+        "start": 2,
+        "end": 4,
+        "subject": "黄色圆形",
+        "action": "静止",
+        "composition": "居中"
+      }
+    ],
+    "result": "1. 0.00–2.00 s　红色方块\n静止　居中\n\n2. 2.00–4.00 s　黄色圆形\n静止　居中"
+  }
+}
