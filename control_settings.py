@@ -13,7 +13,11 @@ _snapshot = ContextVar("cloud_configuration", default=None)
 
 def read():
     if FILE is None or not FILE.exists(): return {"revision":0,"providers":{},"prompts":{}}
-    return json.loads(FILE.read_text())
+    config = json.loads(FILE.read_text())
+    if (not isinstance(config,dict) or not isinstance(config.get("revision"),int)
+            or not isinstance(config.get("providers"),dict) or not isinstance(config.get("prompts"),dict)):
+        raise ValueError("后台配置文件格式无效")
+    return config
 
 
 def current():

@@ -20,7 +20,7 @@ const catalog = {
   '文件保留 7 天；刷新或离开页面后任务继续。':'Files are kept for 7 days. Jobs continue after you leave the page.',
   '本机音轨转写':'Local audio transcription','识别音轨并导出带时间码的字幕。':'Transcribe a local media file and export timed captions.','语言':'Language','自动识别':'Detect automatically','转写音轨':'Transcribe','音频或视频':'Audio or video',
   '下载 SRT 字幕':'Download SRT captions','FFmpeg + Whisper · 支持含音轨的视频和音频，最大 48 MiB、10 分钟。':'FFmpeg + Whisper · Audio files and videos with sound. Maximum 48 MiB and 10 minutes.',
-  '本机缺少 FFmpeg、whisper-cli 或模型文件。':'FFmpeg, whisper-cli, or the local model file is missing.',
+  '音轨转写待配置。请管理员检查语音识别引擎及本地 Whisper 权重。':'Transcription needs setup. Ask an administrator to check the speech engine and local Whisper weights.',
   '监控通知':'Monitor alerts','查看监控通知 →':'View alerts →','查看阈值提醒和投递状态。':'Read threshold alerts and delivery status.','标为已读':'Mark as read','达到监控阈值的最新快照将出现在这里。':'Recent snapshots that cross a monitor threshold appear here.',
   '趋势预测与采样覆盖':'Forecast and sample coverage','缺失日期':'Missing dates','预测日期':'Forecast date','预估销量':'Forecast units','预估 GMV':'Forecast GMV',
   '测试':'Test','正式':'Live','授权素材':'Licensed asset','商品货盘':'Product catalog','编辑':'Edit','删除':'Delete','付款审批':'Payment review','结算审批':'Settlement review',

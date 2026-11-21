@@ -79,7 +79,7 @@ class PlatformAdministrationTests(unittest.TestCase):
         self.assertFalse(token.exists())
         with self.assertRaises(workspace.RequestError):admin.claim(self.db,self.user,self.path,code)
         with self.db:
-            self.db.execute("INSERT INTO cloud_jobs(kind,provider,model,revision,actor,created,status) VALUES('probe','atlas','test',0,1,0,'running')")
+            self.db.execute("INSERT INTO cloud_jobs(kind,provider,model,revision,actor,created,status,worker_pid) VALUES('probe','atlas','test',0,1,0,'running',?)",(os.getpid(),))
             admin.init(self.db,self.path)
         self.assertEqual(admin.jobs(self.db)[0]["status"],"interrupted")
         self.assertFalse(token.exists())

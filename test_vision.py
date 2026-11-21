@@ -29,7 +29,10 @@ class VisionTests(unittest.TestCase):
             with self.assertRaises(ValueError):vision.call("models")
         with self.assertRaises(ValueError):vision.translate("data:image/png;base64,YQ==","English")
         with self.assertRaises(ValueError):vision.analyze_video(b"", "")
-        with patch.dict(os.environ,TIKFLOWSO_VISION_PROVIDER="custom",TIKFLOWSO_CUSTOM_BASE_URL="http://localhost",TIKFLOWSO_CUSTOM_MODEL="test"):
+        with patch.dict(os.environ,TIKFLOWSO_VISION_PROVIDER="custom",TIKFLOWSO_CUSTOM_BASE_URL="http://localhost",TIKFLOWSO_CUSTOM_MODEL="test",TIKFLOWSO_MODEL_KEY="fixture"):
+            with patch.dict(os.environ,TIKFLOWSO_MODEL_KEY=""),self.assertRaises(vision.RequestError) as missing:
+                with vision.inference_slot():pass
+            self.assertEqual(missing.exception.status,503)
             with vision.inference_slot(),self.assertRaises(vision.RequestError) as err:
                 with vision.inference_slot():pass
             self.assertEqual(err.exception.status,429)

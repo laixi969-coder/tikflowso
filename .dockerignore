@@ -1,0 +1,12 @@
+**
+!/*.py
+/test*.py
+/deploy.py
+!/web/
+!/web/**
+!/extension/
+!/extension/**
+!/qa/
+!/qa/samples/
+!/qa/samples/vision/
+!/qa/samples/vision/**

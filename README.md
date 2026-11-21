@@ -2,7 +2,39 @@
 
 面向 TikTok Shop 卖家、达人运营和内容策划的本机电商研究工作台。先阅读[产品需求与验收矩阵](docs/PRD.md)，再查阅[竞品公开证据](docs/对标记录.md)和[数据接入规范](docs/数据接入.md)。
 
-## 启动
+## 一键部署、升级与恢复
+
+在安装了 Python 3.11+、Docker Engine 和 Docker Compose v2.20+ 的 Linux 或 macOS 主机上，从项目目录运行。首次构建需要访问镜像仓库和 PyPI。以下命令使用同一个系统账户。
+
+```sh
+python3 deploy.py
+```
+
+命令会构建镜像，创建独立持久目录，启动服务，等待健康检查通过，再打印管理入口和一次性绑定码的文件位置。默认访问 [本机工作台](http://127.0.0.1:8765/)；五家供应商 key 初始均为空。部署使用镜像里的应用和独立的服务配置。开发目录的 `.env`、`.data` 和已有工作区都留在原处。
+
+**上线域名**　在已有 HTTPS 反向代理的主机上，可直接以自己的真实域名执行下面的首装命令。代理上游为 `127.0.0.1:8765`，转发时保留浏览器的 Host。云端视频请求最大 48 MiB，启用时把代理请求体上限及读取超时调到能容纳该任务的大小。端口可由 `--port` 指定，部署脚本会记住。域名证书及 DNS 由托管方配置。
+
+```sh
+python3 deploy.py --public-url https://research.example.com
+```
+
+**持久化**　默认实例目录为 `~/.local/share/tikflowso`，也可在每条命令中用相同的 `--home` 指定位置。其 `data/` 挂载到容器的 `/app/.data`。数据库保存账户、平台角色、业务记录及导出文件；`tikflowso.providers.json` 保存后台模型、key 与提示词；`service.env` 保存部署域名及可选服务配置。后两份文件含明文凭据，使用 0600 权限。后台保存即时生效，手动修改 `service.env` 后执行升级命令生效。
+
+**接入已有工作区**　迁移原来用 `server.py` 启动的实例时，先执行 `python3 manage.py backup-deployment --db .data/tikflowso.sqlite3 --out /绝对路径/迁移备份`，再用下方的 `restore` 命令指定新目录。既有后台配置会随包迁移；原来仅存于开发 `.env` 的字段按需写入新实例的 `data/service.env`。
+
+| 操作 | 在项目目录执行 |
+|---|---|
+| 升级 | 取得新版代码后运行 `python3 deploy.py upgrade`。先构建，再暂停旧服务、生成升级前备份并启动新镜像；启动失败时，脚本用旧镜像和备份恢复已有容器实例 |
+| 在线备份 | `python3 deploy.py backup`。命令打印新目录，位于实例的 `backups/` 下。将整个目录私密复制到备份主机 |
+| 校验 | `python3 manage.py verify-deployment --dir /绝对路径/备份目录`。核对 SHA-256、SQLite 完整性、外键、表行数和分市场商品金额 |
+| 独立恢复 | `python3 deploy.py restore /绝对路径/备份目录 --home /绝对路径/新实例 --port 8766`。可加 `--public-url` 更改对外地址；验证完成后再切换代理 |
+| 暂停 | `python3 deploy.py stop`。数据保留，运行 `python3 deploy.py` 可重新启动 |
+
+恢复包包含数据库、已保存的后台配置及已有的 `service.env`。初始化码仅在尚未绑定管理员的目标上重新生成。模型目录缓存可在后台重新同步；自备转写权重、授权供数文件、通知路由和汇率文件需另外迁移到配置指定的位置。容器内文件路径以 `/app/.data/` 开头。
+
+首次上线后进入 `/#admin`，注册或登录，读取部署命令提示的绑定码文件，绑定平台管理员。保存所选平台的 key 和模型，再执行「测试连接」和「一键样例验收」。逐项结果和报告下载位于「运行记录」。[后台操作](#部署后填写云端密钥) · [发布验收](docs/PRD.md#10-逐项验收记录)
+
+## 开发机启动
 
 项目使用 Python 标准库、SQLite 和原生浏览器 JavaScript，无需安装 npm 或 pip 依赖。开发验收环境为 Python 3.15、SQLite 3.54 和 Chrome。
 
@@ -114,7 +146,7 @@ node qa/vision_acceptance.cjs --live
 
 - 在任一对象榜点击「后台导出」。在工具页可查看任务状态、失败原因及已完成的 CSV。离开页面后任务继续，文件保留 7 天，成功生成时扣除导出行数。界面对超过 1,000 行的结果自动使用队列。[后台导出](http://127.0.0.1:8765/#tools?tool=exports)
 - 在「趋势研究」选择话题，查看每日覆盖、七日基线和回测误差。点击「收藏此灵感」会保存当时的市场、来源、截止日和周期。在「我的收藏」可按原条件重开。[趋势研究](http://127.0.0.1:8765/#trends)
-- 在「视频拆解」上传视频可取得带起止时间的镜头分析。未启用视觉模型的工作台仍提供五帧预览。「本机音轨转写」接受不超过 48 MiB、10 分钟的音视频，生成文本和 SRT。工作台基础服务使用 Python 标准库；转写需系统中可调用的 `ffmpeg`、`whisper-cli` 和本机权重。本机已就绪。迁移时将已有权重放入 `.data/models/whisper.bin` 或设置 `TIKFLOWSO_WHISPER_MODEL`。[音轨转写](http://127.0.0.1:8765/#tools?tool=transcribe)
+- 在「视频拆解」上传视频可取得带起止时间的镜头分析。未启用视觉模型的工作台仍提供五帧预览。「本机音轨转写」接受不超过 48 MiB、10 分钟的音视频，生成文本和 SRT。部署镜像内置 FFmpeg 和 CPU 版 whisper.cpp 引擎。启用时将自备的多语 GGML 权重放入实例的 `data/models/whisper.bin`，刷新页面即可转写。原生开发环境也可使用 `ffmpeg`、`whisper-cli` 和 `.data/models/whisper.bin`，或用 `TIKFLOWSO_WHISPER_MODEL` 指定权重路径。[音轨转写](http://127.0.0.1:8765/#tools?tool=transcribe)
 - 在开放平台页面下载扩展 ZIP，解压后从 Chrome 扩展管理页加载该目录。[扩展安装包](http://127.0.0.1:8765/downloads/tikflowso-extension.zip)
 
 ### 监控通知

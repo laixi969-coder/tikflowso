@@ -124,6 +124,7 @@ def ask(prompt,image,schema,provider=None,*,task="image_translate"):
 @contextmanager
 def inference_slot():
     if not configured(): raise RequestError(503,"云端视觉模型尚未配置")
+    if not credential(): raise RequestError(503,"所选平台缺少密钥，请联系平台管理员填写 API key")
     if not SLOT.acquire(blocking=False): raise RequestError(429,"视觉模型正在处理其他素材，请稍后重试")
     try: yield
     finally: SLOT.release()

@@ -39,13 +39,9 @@ def init(db,path):
     """)
     if "worker_pid" not in [r[1] for r in db.execute("PRAGMA table_info(cloud_jobs)")]:
         db.execute("ALTER TABLE cloud_jobs ADD COLUMN worker_pid INTEGER")
-    for job,pid in db.execute("SELECT id,worker_pid FROM cloud_jobs WHERE status='running'").fetchall():
-        if pid:
-            try: os.kill(pid,0)
-            except ProcessLookupError: pass
-            except PermissionError: continue
-            else: continue
-        db.execute("UPDATE cloud_jobs SET status='interrupted',finished=?,error='服务重启，可重新执行' WHERE id=?",(int(time.time()),job))
+    # Startup holds the database's exclusive server lock. PIDs can repeat after a container rebuild.
+    db.execute("UPDATE cloud_jobs SET status='interrupted',finished=?,error='服务重启，可重新执行' "
+               "WHERE status='running'", (int(time.time()),))
     token=setup_path(path)
     if db.execute("SELECT 1 FROM platform_admins LIMIT 1").fetchone():
         token.unlink(missing_ok=True)

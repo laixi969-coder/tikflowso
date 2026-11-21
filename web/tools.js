@@ -152,7 +152,7 @@ async function creative(root,c,key){
   const suggestions=key==='agent'?['哪个商品销量最高？','哪些达人涨粉最快？','市场概览']:null;
   root.innerHTML=panel(esc(tools[key][0]),note(esc(tools[key][1]))+form('gen',
     (suggestions?'<div class="tf-inline">'+suggestions.map(x=>'<button class="btn" type="button" data-prompt="'+x+'">'+x+'</button>').join('')+'</div>':'')+
-    (key==='video'&&conf.cloud_vision?'<label>分析方式<select name="method"><option value="semantic">云端镜头语义分析</option><option value="preview">五帧预览</option></select></label>':'')+
+    (key==='video'&&conf.cloud_vision?'<label>分析方式<select name="method"><option value="semantic"'+(conf.vision_status==='pending_key'?' disabled':'')+'>云端镜头语义分析</option><option value="preview"'+(conf.vision_status==='pending_key'?' selected':'')+'>五帧预览</option></select></label>':'')+
     (isMedia?'<label>本地文件<input required type="file" accept="'+media+'/*" name="media"></label>':'')+
     '<label>'+ (key==='image_translate'?'目标语言':key==='extract'?'口播文字':'研究问题或创作素材')+'<textarea required maxlength="8000" rows="4" name="text" placeholder="'+esc(key==='agent'?'例如：当前市场哪些商品销量最高？':'填写与任务相关的素材…')+'">'+(key==='image_translate'?(document.documentElement.lang==='en-US'?'English':'简体中文'):key==='video'?(document.documentElement.lang==='en-US'?'Describe the opening, product demonstration and closing by shot.':'按镜头分析开场、产品展示和收尾。'):'')+'</textarea></label>'+
     note(isMedia&&conf.cloud_vision?'云端视觉模型 · '+esc(conf.vision_model)+(conf.vision_status==='pending_key'?' · 等待部署时填写密钥':' · 提交后发送图片或镜头采样帧'):key==='agent'?(conf.model?'提交后将问题和当前窗口的查询结果发送至已配置的模型。':'答案使用所选市场和时间窗口。'):conf.model?'生成请求将发送到已配置的模型服务。':key==='video'?'本机抽取五个时间点的实际画面。':isMedia?'此功能需要配置支持图像输入的模型。':'当前使用本地文本模板。'),key==='agent'?'查询数据':'生成结果'));
@@ -329,7 +329,7 @@ async function exportCenter(root){
 }
 async function transcribeMedia(root){
   const config=await get('config');
-  root.innerHTML=panel('本机音轨转写',note(config.transcription?'FFmpeg + Whisper · 支持含音轨的视频和音频，最大 48 MiB、10 分钟。':'本机缺少 FFmpeg、whisper-cli 或模型文件。')+
+  root.innerHTML=panel('本机音轨转写',note(config.transcription?'FFmpeg + Whisper · 支持含音轨的视频和音频，最大 48 MiB、10 分钟。':'音轨转写待配置。请管理员检查语音识别引擎及本地 Whisper 权重。')+
     form('transcribe','<label>音频或视频<input name="media" type="file" required accept="audio/*,video/*"></label>'+
     '<label>语言<select name="language"><option value="auto">自动识别</option><option value="zh">中文</option><option value="en">English</option></select></label>','转写音轨'));
   mountForm(root,'transcribe',async(d,out)=>{

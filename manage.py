@@ -58,9 +58,11 @@ def deployment_backup(source,directory):
             fcntl.flock(lock,fcntl.LOCK_SH)
             backup(source,database)
             files=[database]
-            if private.is_file():
-                target=database.with_suffix(".providers.json")
-                with private.open("rb") as incoming,os.fdopen(os.open(target,os.O_WRONLY|os.O_CREAT|os.O_EXCL,0o600),"wb") as outgoing:
+            for config in (private, source.parent/"service.env"):
+                if not config.is_file():
+                    continue
+                target = database.with_suffix(".providers.json") if config == private else directory/"service.env"
+                with config.open("rb") as incoming,os.fdopen(os.open(target,os.O_WRONLY|os.O_CREAT|os.O_EXCL,0o600),"wb") as outgoing:
                     shutil.copyfileobj(incoming,outgoing)
                 files.append(target)
         manifest={p.name:file_hash(p) for p in files}
@@ -74,14 +76,14 @@ def deployment_backup(source,directory):
 def verify_deployment(directory):
     files=json.loads((directory/"manifest.json").read_text())
     database=directory/"tikflowso.sqlite3"
-    names={"tikflowso.sqlite3","tikflowso.providers.json"}
+    names={"tikflowso.sqlite3","tikflowso.providers.json","service.env"}
     if not isinstance(files,dict) or database.name not in files or set(files)-names:
         raise ValueError("备份清单无效")
     for name in names:
         path=directory/name
         if (name in files)!=path.is_file() or name in files and (path.is_symlink() or file_hash(path)!=files[name]):
             raise ValueError("备份文件与清单不一致")
-    with closing(sqlite3.connect(database.resolve().as_uri()+"?mode=ro",uri=True)) as db:
+    with closing(sqlite3.connect(database.resolve().as_uri()+"?mode=ro&immutable=1",uri=True)) as db:
         return {"files":sorted(files),"database":verify(db)}
 
 

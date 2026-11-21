@@ -1,6 +1,7 @@
 """Run tikflowso locally with python3 server.py."""
 import argparse
 import csv
+import fcntl
 import io
 import json
 import logging
@@ -125,6 +126,11 @@ class Handler(BaseHTTPRequestHandler):
         if not (host == public_host and host or re.fullmatch(r"(?:localhost|127\.0\.0\.1|\[::1\])(?::[0-9]+)?",host)):
             raise ws.RequestError(403,"未知站点域名，请检查 TIKFLOWSO_PUBLIC_URL")
         if path == "/health" and self.command=="GET":
+            try:
+                with closing(connect()) as db:
+                    db.execute("SELECT 1 FROM platform_admins LIMIT 1").fetchone()
+            except sqlite3.Error:
+                return self.reply(503,{"status":"unavailable"})
             return self.reply(200,{"status":"ok"})
         if path=="/downloads/tikflowso-extension.zip" and self.command=="GET":
             buffer=io.BytesIO()
@@ -395,7 +401,12 @@ class Handler(BaseHTTPRequestHandler):
 
     def dispatch(self):
         try:
-            with control_settings.pin(): self.handle_request()
+            try:
+                config = control_settings.read()
+            except (OSError, ValueError):
+                return self.reply(503,{"status":"unavailable","error":"后台配置无法读取"})
+            with control_settings.pin(config):
+                self.handle_request()
         except (BrokenPipeError,ConnectionResetError): pass
         except (ws.RequestError,billing.BillingError) as exc:
             retry=getattr(exc,"retry_after",None)
@@ -434,6 +445,7 @@ def job_worker(stop,run_one):
 
 def main():
     global DATABASE
+    os.umask(0o077)
     settings.load()
     parser=argparse.ArgumentParser(description="tikflowso 本地分析服务")
     parser.add_argument("--db",type=Path,default=DATABASE)
@@ -442,6 +454,13 @@ def main():
     args=parser.parse_args()
     DATABASE=args.db.resolve()
     control_settings.FILE=DATABASE.with_suffix(".providers.json")
+    DATABASE.parent.mkdir(parents=True, exist_ok=True)
+    # Keep a single worker pool per database for the lifetime of this server.
+    instance_lock = open(str(DATABASE)+".server.lock","a")
+    try:
+        fcntl.flock(instance_lock,fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        parser.exit(1, "此数据库已有服务在运行\n")
     initialize()
     httpd=ThreadingHTTPServer((args.host,args.port),Handler)
     stop=threading.Event()
@@ -454,6 +473,7 @@ def main():
     finally:
         stop.set()
         httpd.server_close()
+        instance_lock.close()
 
 
 if __name__=="__main__": main()

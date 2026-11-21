@@ -1,0 +1,21 @@
+services:
+  app:
+    build: .
+    image: ${TF_IMAGE:?use deploy.py}
+    init: true
+    restart: unless-stopped
+    user: "${TF_UID:?}:${TF_GID:?}"
+    ports:
+      - "127.0.0.1:${TF_PORT:?}:8765"
+    volumes:
+      - type: bind
+        source: ${TF_DATA:?}
+        target: /app/.data
+        bind:
+          create_host_path: false
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8765/health', timeout=3).read()"]
+      interval: 5s
+      timeout: 4s
+      retries: 8
+      start_period: 15s

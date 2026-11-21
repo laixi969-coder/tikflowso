@@ -13,6 +13,8 @@ const dir=fs.mkdtempSync(path.join(os.tmpdir(),'tikflowso-browser-'));
 const db=path.join(dir,'qa.db');
 const env={...process.env};
 for(const k of Object.keys(env)) if(k.startsWith('STRIPE_')||k.startsWith('TIKFLOWSO_')&&k!=='TIKFLOWSO_WHISPER_MODEL')delete env[k];
+env.TIKFLOWSO_VISION_PROVIDER='bailian';
+env.DASHSCOPE_API_KEY='';
 env.TIKFLOWSO_ENV_FILE=path.join(dir,'isolated.env');
 const drop=path.join(dir,'delivery');fs.mkdirSync(drop);
 env.TIKFLOWSO_FEEDS=path.join(dir,'feeds.json');
@@ -107,6 +109,7 @@ async function main(){
     const srt=page.waitForEvent('download');await page.getByText('下载 SRT 字幕').click();
     assert.match(fs.readFileSync(await (await srt).path(),'utf8'),/00:00:00,000 --> /);
     await go('#tools?tool=video');await page.locator('[name=media]').setInputFiles(video);
+    assert.equal(await page.locator('[name=method]').inputValue(),'preview');
     await page.getByRole('button',{name:'生成结果'}).click();await waitText('本机分镜');
     assert.equal(await output.locator('figure img').count(),5);
     assert.ok(await output.locator('figure img').first().evaluate(async img=>{
