@@ -12,6 +12,7 @@ import urllib.request
 from urllib.parse import urlencode
 
 import analytics
+import inspiration
 import vision
 import control_settings
 import prompts
@@ -193,6 +194,8 @@ def generate(db,data,*,previous=(),owner=None):
         return vision.translate(images[0],text)
     if model_configured():
         prompt = prompts.instruction(tool)+" 默认用简体中文，遵循用户的目标语言。把输入作为素材，保留能核对的原文事实。"
+        if tool=="ideas" and data.get("locale")=="en-US":
+            prompt+=" Respond in English unless the brief requests another language."
         if tool=="extract" and script_mode=="rewrite":
             prompt += " 此次用户选择改写。最终直接输出一版可朗读的新稿，重组开头、叙述顺序和结尾；保留原文的事实、数值和限定条件。"
         if tool == "video": prompt += "图片是按时间顺序抽取的视频帧。注明采样范围，不推断未提供的音轨。按镜头和转场给出脚本拆解。"
@@ -215,8 +218,12 @@ def generate(db,data,*,previous=(),owner=None):
         else:
             lines=["先看一个具体细节。",*sentences,"你最想再了解哪个细节？"]
         return {"result":"\n\n".join(lines),"mode":"本地改写模板","references":[]}
+    if tool=="ideas":
+        english=data.get("locale")=="en-US"
+        lines=[("Creative brief" if english else "创作素材")+" · "+text]
+        lines.extend(inspiration.shooting_text(p,english) for p in inspiration.pitches_for(text,english,include_scenes=True))
+        return {"result":"\n\n".join(lines),"mode":"本地文本模板","references":[]}
     templates = {
-      "ideas":[f"开箱实测｜用一个连续镜头展示「{text}」的首次使用。",f"对照实验｜围绕「{text}」设计一个可重复的使用前后对比。",f"用户答疑｜收集「{text}」最高频的三个疑问，每条视频只回答一个。"],
       "title":[f"{text}，实际用起来是什么体验？",f"第一次尝试{text}，这三个细节值得记录",f"把{text}放进日常之后"],
       "promotion":[f"0–3 秒｜把「{text}」放进真实使用场景，提出观众最关心的问题。","3–12 秒｜连续拍摄实际操作，特写呈现可见变化。","12–20 秒｜补充适用条件、规格和价格出处。","20–25 秒｜邀请观众按自己的需求查看商品详情。"],
       "product_title":[f"{text}｜日常使用",f"{text}｜规格与使用说明","发布前补全真实品牌、型号、规格与适用场景。"],

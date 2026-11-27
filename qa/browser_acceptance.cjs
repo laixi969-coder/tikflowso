@@ -7,7 +7,9 @@ const {spawn,execFileSync} = require('node:child_process');
 const {once} = require('node:events');
 const {createInterface} = require('node:readline');
 process.env.PW_CHROMIUM_ATTACH_TO_OTHER='1'; // Chrome exposes extension popups as other targets.
-const {chromium} = require(process.env.PLAYWRIGHT_CORE || '/opt/homebrew/lib/node_modules/rea-agents/node_modules/playwright-core');
+const {chromium} = require(process.env.PLAYWRIGHT_CORE || require.resolve('playwright-core', {
+  paths: [__dirname, '/opt/homebrew/lib/node_modules/rea-agents'],
+}));
 const root=path.resolve(__dirname,'..');
 const dir=fs.mkdtempSync(path.join(os.tmpdir(),'tikflowso-browser-'));
 const db=path.join(dir,'qa.db');
@@ -266,6 +268,52 @@ async function main(){
     await go('#favorites');await page.locator('[data-remove-topic]').first().click();
     await page.getByText('已收藏的灵感').waitFor({state:'hidden'});
     console.log('PASS review sentiment, topic forecast, English language switch, save/reopen/remove inspiration');
+    await page.route('**/api/inspiration/videos?**',route=>{
+      const name=new URL(route.request().url()).searchParams.get('subject') || '机械键盘';
+      const items=Array.from({length:12},(_,i)=>({subject:name, title:name+' review '+i,
+        url:'https://www.dailymotion.com/video/xfixture'+i, author:'QA', platform:'Dailymotion', published:'2026-11-10', match:'name'}));
+      return route.fulfill({json:{day:'2026-11-19',target:12,items,incomplete_search:false}});
+    });
+    await go('#inspiration?market=CN&source=demo&date=2026-11-19&days=7');
+    const ideaCards=page.locator('.idea-card');
+    await ideaCards.first().waitFor();
+    assert.equal(await ideaCards.count(),3);
+    assert.equal(await ideaCards.locator('.idea-shots li').count(),9);
+    await page.locator('#idea-subject').fill('通勤包');
+    await page.getByRole('button',{name:'看选题'}).click();
+    await ideaCards.first().getByText('快到闸机了，卡还在包底').waitFor();
+    await page.context().grantPermissions(['clipboard-read','clipboard-write'],{origin:base});
+    await ideaCards.nth(1).getByRole('button',{name:'复制拍摄稿'}).click();
+    const shootingBrief=await page.evaluate(()=>navigator.clipboard.readText());
+    for(const phrase of ['通勤包','下班多买一本书','开场口播','收尾画面','没装进去的物件'])assert.ok(shootingBrief.includes(phrase));
+    const bagCard=ideaCards.first();
+    const ref=bagCard.locator('.idea-reference a').first();
+    assert.match(await ref.getAttribute('href'),/^https:\/\/www\.bilibili\.com\/video\//);
+    const originalShots=await bagCard.locator('.idea-shots').innerText();
+    await bagCard.locator('.idea-adapt summary').click();
+    for(const name of ['在家拍','一个人拍','不露脸'])await bagCard.getByLabel(name,{exact:true}).check();
+    assert.notEqual(await bagCard.locator('.idea-shots').innerText(),originalShots);
+    await bagCard.getByRole('button',{name:'复制拍摄稿'}).click();
+    const adaptedBrief=await page.evaluate(()=>navigator.clipboard.readText());
+    for(const phrase of ['玄关钥匙盘','固定手机','开场字幕','收尾画面',await ref.getAttribute('href')])assert.ok(adaptedBrief.includes(phrase));
+    await page.locator('[data-locale-toggle]').click();
+    await page.getByRole('heading',{name:'Three ways to film it'}).waitFor();
+    assert.match(await ideaCards.first().innerText(),/Three steps to the gate/);
+    assert.equal(await bagCard.getByLabel('Face off camera',{exact:true}).isChecked(),true);
+    await page.locator('[data-locale-toggle]').click();
+    await page.getByRole('heading',{name:'这个商品可以这样拍'}).waitFor();
+    await page.locator('#idea-subject').fill('机械键盘');
+    await page.getByRole('button',{name:'看选题'}).click();
+    const daily=page.locator('.daily-reference');
+    await daily.first().getByRole('link',{name:/机械键盘 review/}).waitFor();
+    assert.equal(await daily.count(),12);
+    await daily.first().locator('summary').click();
+    await daily.first().getByLabel('一个人拍',{exact:true}).check();
+    await daily.first().getByRole('button',{name:'复制拍摄稿'}).click();
+    assert.match(await page.evaluate(()=>navigator.clipboard.readText()),/书堆[\s\S]+xfixture0/);
+    console.log('PASS product-specific shooting ideas, complete copied brief and bilingual cards');
+    await go('#products?market=US&source=demo&date=2026-11-19&days=7');
+    await page.locator('.records tbody tr').first().waitFor();
     await go('#detail?kind=products&id=p01');await page.locator('[data-monitor]').click();await waitText('已加入监控');
     await go('#monitor');await page.locator('[data-th]').first().fill('1');
     await page.locator('[data-threshold]').first().click();await waitText('已达到阈值');
@@ -380,12 +428,12 @@ async function main(){
     const level=i=>page.locator('.library [data-field=category]').nth(i);
     await level(0).selectOption('Goods'); await level(1).selectOption('Goods > Tea');
     await level(2).waitFor();
-    assert.equal(await page.locator('.library tbody tr').count(),2);
+    assert.equal(await page.locator('.library .records tbody tr').count(),2);
     await level(2).selectOption('Goods > Tea > Black'); await page.waitForFunction(
-      ()=>document.querySelectorAll('.library tbody tr').length===1);
-    assert.match(await page.locator('.library tbody').innerText(),/Black Tea/);
+      ()=>document.querySelectorAll('.library .records tbody tr').length===1);
+    assert.match(await page.locator('.library .records tbody').innerText(),/Black Tea/);
     await level(2).selectOption('Goods > Tea'); await page.waitForFunction(
-      ()=>document.querySelectorAll('.library tbody tr').length===2);
+      ()=>document.querySelectorAll('.library .records tbody tr').length===2);
     console.log('PASS three-level catalog drill-down, prefix boundary, and parent reset');
     run('python3',['-c',`import sqlite3,sys,time
 with sqlite3.connect(sys.argv[1]) as db:

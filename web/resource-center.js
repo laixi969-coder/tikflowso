@@ -26,11 +26,11 @@ export function downloadMarketReport(data) {
     t("数据来源","Source")+"  "+data.source+(data.source==="demo" ? " · "+t("合成演示数据","Synthetic demo data") : ""),
     t("品类","Category")+"  "+(data.category||t("全部品类","All categories")),""];
   for (const [key,label] of Object.entries(metrics)) {
-    lines.push(label+"  "+number(data.metrics[key])+"    "+covered+" "+data.coverage[key]+"/"+data.days);
+    lines.push(label+"  "+number(data.metrics[key+"_exact"] ?? data.metrics[key])+"    "+covered+" "+data.coverage[key]+"/"+data.days);
   }
   if (data.trend.length) {
     lines.push("",[t("日期","Date"),metrics.gmv,metrics.sales,metrics.views].join("\t"));
-    for (const day of data.trend) lines.push([day.date,number(day.gmv),number(day.sales),number(day.views)].join("\t"));
+    for (const day of data.trend) lines.push([day.date,number(day.gmv_exact ?? day.gmv),number(day.sales),number(day.views)].join("\t"));
   } else {
     lines.push("",t("所选期间没有快照。","No snapshots in this period."));
   }

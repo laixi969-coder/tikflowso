@@ -1,7 +1,14 @@
+import io
+import json
+from pathlib import Path
 import sqlite3
+import subprocess
+import sys
+import tempfile
 import unittest
 
 import analytics
+import research_decisions
 
 
 class SnapshotAnalyticsTests(unittest.TestCase):
@@ -48,6 +55,69 @@ class SnapshotAnalyticsTests(unittest.TestCase):
         self.assertEqual(self.query("overview",source)["metrics"]["gmv"],3)
         with self.assertRaises(ValueError):
             analytics.import_rows(self.db,[row],"demo")
+
+    def test_round_average_once_and_reject_fractional_cents(self):
+        for amount, expected in (("5.35", "2.68"), ("5.37", "2.68")):
+            source = "average-" + amount.replace(".", "")
+            analytics.import_rows(self.db, [self.sample("one",2,amount,sales=2)], source)
+            params = {"source":source,"days":1}
+            scope = analytics.scope_for(self.db, params)
+            self.assertEqual(research_decisions.evidence(self.db,scope,"one")["current"]["avg_price"], expected)
+            self.assertEqual(self.query("rankings",source,days=1)["items"][0]["avg_price"], float(expected))
+            self.assertEqual(self.query("overview",source,days=1)["activity"]["avg_price"], float(expected))
+            self.assertEqual(self.query("markets",source,days=1)["items"][0]["avg_price"], float(expected))
+        with self.assertRaises(ValueError):
+            analytics.numeric("1.00000000000000000000000000000001", "gmv", money=True)
+        self.assertEqual(analytics.numeric("1.01000000000000000000000000000", "gmv", money=True), 101)
+
+    def test_cli_json_decimal_profile_and_strict_csv(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp)/"data.json"
+            dbpath = Path(tmp)/"data.db"
+            command = [sys.executable, str(Path(analytics.__file__)), str(path), "--db", str(dbpath), "--source", "merchant"]
+            raw = '[{"kind":"lives","id":"1","name":"A","market":"US","date":"2026-10-01","sales":1,"gmv":99999999999999.01,"profile":{"live_session":{"gmv":99999999999999.01}}}]'
+            path.write_text(raw)
+            subprocess.run(command, check=True, capture_output=True)
+            db = sqlite3.connect(dbpath)
+            try:
+                cents, profile = db.execute("SELECT gmv_units,profile_json FROM analytics_daily WHERE source='merchant'").fetchone()
+                self.assertEqual((cents,json.loads(profile)["live_session"]["gmv"]), (9999999999999901,"99999999999999.01"))
+            finally:
+                db.close()
+            path.write_text(raw.replace("99999999999999.01", "1.00000000000000000000000001"))
+            self.assertNotEqual(subprocess.run(command, capture_output=True).returncode, 0)
+        with self.assertRaises(ValueError):
+            analytics.profile_json('{"live_session":{"gmv":1.00000000000000000000000001}}', "lives")
+        for raw in ("id,id\n1,2", "id, \n1,2", "id,name\n1", "id,name\n1,a,b", 'id,name\n1,"unclosed'):
+            with self.subTest(raw=raw), self.assertRaises(ValueError):
+                list(analytics.csv_rows(io.StringIO(raw)))
+        self.assertEqual(list(analytics.csv_rows(io.StringIO('id,name,note\n1,"a,b",'))), [{"id":"1","name":"a,b","note":""}])
+
+    def test_large_totals_and_earliest_cutoff_across_analytics_routes(self):
+        source = "large-metrics"
+        for label, count in (("A",930), ("B",931)):
+            analytics.import_rows(self.db, (self.sample(f"{label}{i}",1,10**14, category=label, date="1900-01-01")
+                                            for i in range(count)), source)
+        scope = {"days":7,"date":"1900-01-01"}
+        overview = self.query("overview",source,**scope)
+        self.assertEqual(overview["metrics"]["gmv_exact"], "186100000000000000.00")
+        self.assertEqual(overview["trend"][0]["gmv_exact"], overview["metrics"]["gmv_exact"])
+        self.assertIsNone(overview["changes"]["gmv"])
+        groups = self.query("trends",source,group="category",**scope)["items"]
+        self.assertEqual([(g["name"],g["gmv_exact"]) for g in groups],
+                         [("B","93100000000000000.00"),("A","93000000000000000.00")])
+        self.assertEqual(self.query("markets",source,**scope)["items"][0]["gmv_exact"], overview["metrics"]["gmv_exact"])
+
+    def test_exact_large_session_and_unknown_estimate_in_live_responses(self):
+        source = "large-session"
+        profile = '{"live_products":[{"id":"p","sales":1,"gmv":99999999999999.01}],"live_session":{"gmv":99999999999999.01}}'
+        analytics.import_rows(self.db,[self.sample("live",1,1,kind="lives",profile=profile),self.sample("p",1,1)],source)
+        room = self.query("overview",source,live_only="1")["live_preview"]
+        self.assertEqual(room["room"]["gmv"], "99999999999999.01")
+        self.assertIsNone(room["rooms"][0]["period_estimated"])
+        detail = self.query("detail", source, kind="lives",id="live")
+        self.assertEqual(detail["live_analysis"]["products"][0]["gmv_exact"], "99999999999999.01")
+        json.dumps(detail, allow_nan=False)
 
     def test_live_products_use_explicit_daily_links_and_similar_rooms_match_scope(self):
         source = "live-analysis"
@@ -194,6 +264,33 @@ class SnapshotAnalyticsTests(unittest.TestCase):
         self.assertEqual(self.query("rankings",source,kind="creators",days="1")["items"][0]["follower_growth"],-2)
         self.assertEqual([(r["name"],r["gmv"]) for r in self.query("trends",source)["items"]],
                          [("new",24),("old",12)])
+
+    def test_single_kind_ranking_matches_mixed_window_with_changing_categories(self):
+        source = "mixed-closing-categories"
+        facts = []
+        for group, kind in enumerate(analytics.KINDS):
+            for ident in ("a", "b", "z"):
+                for day in range(1, 5):
+                    if ident == "z" and day == 1:
+                        continue
+                    facts.append(self.sample(ident, day, (group+1)*day, kind=kind,
+                                             category="New > Child" if day == 4 else "Old",
+                                             segment="end" if day == 4 else "start"))
+        analytics.import_rows(self.db, reversed(facts), source)
+        scope = analytics.scope_for(self.db, {"source":source, "date":"2026-10-04", "days":2})
+        mixed = analytics.rows_for(self.db, scope)
+        for group, kind in enumerate(analytics.KINDS):
+            params = {"kind":kind, "category":"New", "segment":"end", "sort":"growth"}
+            expected = analytics.leaderboard(mixed, kind, params)
+            with self.subTest(kind=kind):
+                ranked = analytics.ranking_page(self.db, scope, params)
+                self.assertEqual(ranked["items"], expected)
+                self.assertEqual([r["id"] for r in expected], ["a","b","z"])
+                self.assertIsNone(expected[-1]["growth"])
+                self.assertEqual(expected[0]["gmv"], (group+1)*7)
+                page = analytics.ranking_page(self.db, scope, {**params,"page":2,"limit":1})
+                self.assertEqual((page["items"], page["total"]), ([expected[1]], 3))
+                self.assertEqual(analytics.ranking_page(self.db, scope, {**params,"category":"Old"})["total"], 0)
 
     def test_breakout_uses_data_instead_of_source_label(self):
         result = self.query("rankings","demo",kind="creators",segment="breakout")["items"]

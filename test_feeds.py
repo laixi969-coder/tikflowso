@@ -80,6 +80,29 @@ class LicensedFeedTests(unittest.TestCase):
         file.write_text(header+row)
         self.assertEqual(self.sync()[0]["rows"],1)
 
+    def test_json_decimal_and_malformed_files_do_not_advance_receipts(self):
+        file=self.drop/"precise.json"
+        def content(gmv, identifier='"sample"'):
+            return ('[{"market":"US","kind":"products","id":'+identifier+',"name":"Sample",'
+                    '"date":"2026-11-01","sales":1,"gmv":'+gmv+'}]')
+        file.write_text(content("99999999999998.99"))
+        self.assertEqual(self.sync()[0]["rows"],1)
+        self.assertEqual(self.db.execute("SELECT gmv_units FROM analytics_daily").fetchone()[0],9999999999999899)
+        receipt=self.db.execute("SELECT digest FROM feed_items").fetchone()[0]
+        for invalid in (content("1.000000000000000001"),content("1.00000000000000000000000000001"),content("1","1.25")):
+            file.write_text(invalid)
+            self.assertEqual(self.sync()[0]["status"],"error")
+            self.assertEqual(self.db.execute("SELECT digest FROM feed_items").fetchone()[0],receipt)
+        file.unlink()
+        csv_file=self.drop/"unequal.csv"
+        fields="market,kind,id,name,date,sales,gmv"
+        row="US,products,sample,Sample,2026-11-01,1,3"
+        for bad_csv in (fields+"\n"+row+",99", fields+",sales\n"+row+",99", fields+",category\n"+row):
+            csv_file.write_text(bad_csv)
+            self.assertEqual(self.sync()[0]["status"],"error")
+        self.assertEqual(self.db.execute("SELECT COUNT(*) FROM feed_items").fetchone()[0],1)
+        self.assertEqual(self.db.execute("SELECT gmv_units FROM analytics_daily").fetchone()[0],9999999999999899)
+
     def test_remote_requires_configured_token_and_rejects_cross_origin(self):
         self.cfg.write_text(json.dumps([{"id":"x","source":"supplier","url":"https://licensed.example/delivery.json",
                                         "token_env":"TIKFLOWSO_TEST_TOKEN_MISSING"}]))

@@ -125,6 +125,16 @@ def main():
     reconcile.add_argument("--since",required=True,help="UTC YYYY-MM-DD")
     reconcile.add_argument("--until",required=True,help="UTC YYYY-MM-DD, exclusive")
     reconcile.add_argument("--apply",action="store_true",help="写入核实后的缺失分录，默认只报告")
+    baseline=s.add_parser("import-source-baseline",help="导入独立商户逐日商品基准清单")
+    baseline.add_argument("--db",type=Path,required=True)
+    baseline.add_argument("--file",type=Path,required=True)
+    baseline.add_argument("--revise",action="store_true",help="追加已经核实的商户修订版本")
+    check=s.add_parser("reconcile-source",help="按商品行数、销量和本币 GMV 核对窗口")
+    check.add_argument("--db",type=Path,required=True)
+    check.add_argument("--source",required=True)
+    check.add_argument("--market",required=True)
+    check.add_argument("--since",required=True,help="首个统计日，含")
+    check.add_argument("--until",required=True,help="末个统计日，含")
     acl=s.add_parser("source-access")
     acl.add_argument("--db",type=Path,required=True)
     acl.add_argument("--source",required=True)
@@ -150,6 +160,27 @@ def main():
     d.add_argument("--reason",required=True)
     d.add_argument("action",choices=("open","reopen","won","lost"))
     args=p.parse_args()
+    if args.action in ("import-source-baseline","reconcile-source"):
+        import csv
+        import source_reconciliation
+        write=args.action=="import-source-baseline"
+        uri=args.db.resolve().as_uri()+("?mode=rw" if write else "?mode=ro")
+        try:
+            with closing(sqlite3.connect(uri,uri=True,timeout=15)) as db:
+                if write:
+                    result=source_reconciliation.load_file(db,args.file.read_bytes(),args.revise)
+                else:
+                    import analytics
+                    analytics.iso_day(args.since)
+                    analytics.iso_day(args.until)
+                    db.execute("BEGIN")
+                    result=source_reconciliation.report(db,args.source,args.market.upper(),args.since,args.until)
+        except (ValueError,OSError,csv.Error,sqlite3.Error) as error:
+            p.error(str(error))
+        print(json.dumps(result,ensure_ascii=False,indent=2))
+        if not write and not result["matched"]:
+            raise SystemExit(1)
+        return
     if args.action in ("erase-user","replay-erasures"):
         import privacy
         with closing(sqlite3.connect(args.db.resolve().as_uri()+"?mode=rw",uri=True)) as db,db:

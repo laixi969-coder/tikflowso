@@ -1,11 +1,12 @@
 import "./resource-center.js";
 import {capacityPanel,bindCapacity,renderCapacityReview} from './monitor-capacity.js';
 import { localMessage } from "./locale.js";
+import {decisionHistory,reviewDecision} from './research-decisions.js';
 import { renderTranslation } from "./text-translation.js";
 const tools = {
   text_translate: ['文本翻译', '翻译搜索词、商品名与其他文字。'],
   agent: ['数据助手', '查询当前市场的成交、销量、观看与增长。'],
-  ideas: ['选题灵感', '从商品或人群出发寻找拍摄角度。'],
+  ideas: ['选题灵感', '写下商品或生活场景，拿到三条带开场口播和分镜的选题。'],
   promotion: ['推广脚本', '将商品卖点整理成分镜与时间段。'],
   title: ['视频标题', '围绕选题撰写多版短视频标题。'],
   product_title: ['商品标题', '根据提供的规格整理商品名称。'],
@@ -111,16 +112,20 @@ function bindMonitorControls(root,c,kind,status){
   });
 }
 async function researchLists(root,c,view){
-  const isMon=view==='monitor',endpoint=isMon?'monitors':'favorites',data=await get(endpoint);
+  const isMon=view==='monitor',endpoint=isMon?'monitors':'favorites';
+  const [data,decisions]=await Promise.all([get(endpoint),isMon?null:get('research-decisions')]);
   const kind=monitorKinds.includes(c.params?.task_kind)?c.params.task_kind:'';
   const status=['active','completed'].includes(c.params?.task_state)?c.params.task_state:'';
   const rows=isMon?data.items.filter(r=>(!kind||kind===r.kind)&&(!status||status===r.status)):data.items;
   let prefix=isMon?monitorControls(c,kind,status,data)+'<a class="tf-back" href="#tools?tool=alerts">查看监控通知 →</a>':'';
+  if(decisions?.items.length)prefix+=panel('已保存的选品判断',decisionHistory(decisions,esc));
   const topics=data.topics||[];
   if(topics.length){
     prefix+=panel('已收藏的灵感',topics.map((r,i)=>'<article class="tf-row"><div><small>'+esc(r.market+' · '+r.date+' · '+r.days+'d')+'</small><a class="tf-entity" href="'+esc(link(r.group==='script'?'inspiration':'trends',r))+'">'+esc(r.topic)+'</a></div><button class="btn" data-remove-topic="'+i+'">移除</button></article>').join(''));
   }
   root.onclick=async e=>{
+    const review=e.target.closest('[data-compare-decision],[data-older-decisions],[data-download-decision]');
+    if(review)return reviewDecision(review,get,esc);
     const b=e.target.closest('[data-remove-topic]');
     if(b)try{await get('saved-topics',{...topics[Number(b.dataset.removeTopic)],remove:true});await researchLists(root,c,view);}catch(err){b.textContent=err.message;}
   };
@@ -141,7 +146,7 @@ async function researchLists(root,c,view){
   if(isMon){bindMonitorControls(root,c,kind,status);const btn=document.createElement('button');btn.className='btn';btn.textContent='刷新监控记录';btn.onclick=()=>researchLists(root,c,view);root.querySelector('.tf-monitor').parentElement.querySelector('h2').after(btn);}
   root.onclick=async e=>{
     const b=e.target.closest('button');if(!b)return;
-    if(b.hasAttribute('data-remove-topic'))return removeTopic(e);
+    if(b.matches('[data-remove-topic],[data-compare-decision],[data-older-decisions],[data-download-decision]'))return removeTopic(e);
     const action=Object.keys(b.dataset)[0],r=rows[Number(b.dataset[action])];if(!['delete','status','threshold'].includes(action)||!r)return;
     let data=action==='threshold'?{mid:r.mid,threshold:root.querySelector('[data-th="'+b.dataset.threshold+'"]').value||null}:action==='status'?{mid:r.mid,status:r.status==='active'?'completed':'active'}:{...r,remove:true};
     b.disabled=true;
@@ -215,7 +220,7 @@ async function creative(root,c,key){
     (key==='extract'?'<label>处理方式<select name="script_mode">'+choices([['structure','结构拆解'],['rewrite','改写口播']],'structure')+'</select></label>':'')+
     (key==='video'&&conf.cloud_vision?'<label>分析方式<select name="method"><option value="semantic"'+(conf.vision_status==='pending_key'?' disabled':'')+'>云端镜头语义分析</option><option value="preview"'+(conf.vision_status==='pending_key'?' selected':'')+'>五帧预览</option></select></label>':'')+
     (isMedia?'<label>本地文件<input required type="file" accept="'+media+'/*" name="media"></label>':'')+
-    '<label>'+ (key==='image_translate'?'目标语言':key==='extract'?'口播文字':'研究问题或创作素材')+'<textarea required maxlength="8000" rows="4" name="text" placeholder="'+esc('填写与任务相关的素材…')+'">'+(key==='image_translate'?(document.documentElement.lang==='en-US'?'English':'简体中文'):key==='video'?(document.documentElement.lang==='en-US'?'Describe the opening, product demonstration and closing by shot.':'按镜头分析开场、产品展示和收尾。'):'')+'</textarea></label>'+
+    '<label>'+ (key==='image_translate'?'目标语言':key==='extract'?'口播文字':key==='ideas'?'你想拍什么？':'研究问题或创作素材')+'<textarea required maxlength="8000" rows="4" name="text" placeholder="'+esc(key==='ideas'?'例如：想拍通勤包。早上左手提着早餐，刷门卡时只剩一只手。':'填写与任务相关的素材…')+'">'+(key==='image_translate'?(document.documentElement.lang==='en-US'?'English':'简体中文'):key==='video'?(document.documentElement.lang==='en-US'?'Describe the opening, product demonstration and closing by shot.':'按镜头分析开场、产品展示和收尾。'):'')+'</textarea></label>'+
     note(isMedia&&conf.cloud_vision?'云端视觉模型 · '+esc(conf.vision_model)+(conf.vision_status==='pending_key'?' · 等待部署时填写密钥':' · 提交后发送图片或镜头采样帧'):conf.model?'生成请求将发送到已配置的模型服务。':key==='video'?'本机抽取五个时间点的实际画面。':isMedia?'此功能需要配置支持图像输入的模型。':'当前使用本地文本模板。'),'生成结果'));
   if(key==='extract'&&transcriptDraft!==null){
     root.querySelector('textarea').value=transcriptDraft;

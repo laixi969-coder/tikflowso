@@ -31,7 +31,8 @@ def write_csv(file, scope, rows):
     writer = csv.DictWriter(file,FIELDS)
     writer.writeheader()
     for rank,row in enumerate(rows,1):
-        writer.writerow({k:safe(rank if k=="rank" else scope.get(k,row.get(k))) for k in FIELDS})
+        values = {**row, **scope, "rank":rank, "gmv":row.get("gmv_exact", row["gmv"])}
+        writer.writerow({k:safe(values.get(k)) for k in FIELDS})
 
 
 def submit(db,user,data):
@@ -41,17 +42,22 @@ def submit(db,user,data):
     params={k:str(params[k]) for k in analytics.RANKING_KEYS if params.get(k) not in ("", None)}
     ws.check_source(db,user,params.get("source","demo"))
     owner=ws.workspace(user)
-    saved=db.execute("SELECT job FROM export_jobs WHERE uid=? AND owner=? AND request_key=?",
-                     (user["id"],owner,key)).fetchone()
-    if saved: return {"job":saved[0]}
-    scope=analytics.scope_for(db,params)
-    analytics.ranking_filter(params.get("kind","products"),params)
-    params["date"]=scope["date"]
-    db.execute("""INSERT INTO export_jobs(uid,owner,request_key,params,created) VALUES(?,?,?,?,?)
-                ON CONFLICT(uid,owner,request_key) DO NOTHING""",
-               (user["id"],owner,key,json.dumps(params,ensure_ascii=False),ws.now()))
-    return {"job":db.execute("SELECT job FROM export_jobs WHERE uid=? AND owner=? AND request_key=?",
-                             (user["id"],owner,key)).fetchone()[0]}
+    lookup = "SELECT job,params FROM export_jobs WHERE uid=? AND owner=? AND request_key=?"
+    identity = (user["id"],owner,key)
+    saved = db.execute(lookup,identity).fetchone()
+    if not saved:
+        scope = analytics.scope_for(db,params)
+        analytics.ranking_filter(params.get("kind","products"),params)
+        frozen = {**params,"date":scope["date"]}
+        db.execute("""INSERT INTO export_jobs(uid,owner,request_key,params,created) VALUES(?,?,?,?,?)
+                    ON CONFLICT(uid,owner,request_key) DO NOTHING""",
+                   (*identity,json.dumps(frozen,ensure_ascii=False),ws.now()))
+        saved = db.execute(lookup,identity).fetchone()
+    stored = json.loads(saved[1])
+    defaults = {"kind":"products","days":"7","market":"US","source":"demo","date":stored["date"]}
+    if {**defaults, **stored} != {**defaults, **params}:
+        raise ws.RequestError(409,"该请求标识已用于其他导出条件")
+    return {"job":saved[0]}
 
 
 def listing(db,user):
@@ -86,11 +92,11 @@ def run_one(connect):
                 with closing(connect()) as reader, closing(sqlite3.connect(tmp+"/sort.db")) as spool:
                     reader.execute("BEGIN")
                     scope=analytics.scope_for(reader,params)
-                    metric,accepts=analytics.ranking_filter(params.get("kind","products"),params)
+                    metric,rows=analytics.ranking_rows(reader,scope,params)
                     spool.execute("CREATE TABLE spool(metric NUMERIC,id TEXT,record TEXT)")
                     spool.executemany("INSERT INTO spool VALUES(?,?,?)",(
-                        (row[metric],row["id"],json.dumps(row,ensure_ascii=False))
-                        for row in analytics.iter_rows(reader,scope) if accepts(row)))
+                        (analytics.ranking_value(row,metric),row["id"],json.dumps(row,ensure_ascii=False))
+                        for row in rows))
                     reader.rollback()
                     count=spool.execute("SELECT COUNT(*) FROM spool").fetchone()[0]
                     rows=spool.execute("SELECT record FROM spool ORDER BY metric IS NULL,metric DESC,id")

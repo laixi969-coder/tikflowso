@@ -93,3 +93,17 @@ class AssistantTemplates(unittest.TestCase):
         sent=messages[1]["content"][0]["text"]
         for value in ("Use two bullets","Prior answer","I want to buy this item","2026-11-09",a["references"][0]["href"]):
             self.assertIn(value,sent)
+
+    def test_explicit_id_wins_and_creator_efficiency_requires_matching_days(self):
+        source = "focus-coverage-fixture"
+        rows = [dict(kind="products",id=key,name=name,sales=units,gmv=units,market="GB",date="2026-11-15")
+                for key,name,units in [("sku","Exact item",1),("sku-plus","Sibling item",100)]]
+        rows += [dict(kind="creators",id=key,name=key,sales=units,gmv=units,market="GB",date=stamp,views=views)
+                 for key,stamp,units,views in [("partial","2026-11-14",100,None),("partial","2026-11-15",1,10),
+                                              ("measured","2026-11-14",2,0),("measured","2026-11-15",2,20)]]
+        analytics.import_rows(self.db,rows,source,shared=True)
+        exact = self.ask("video_script",source=source,focus="sku",days=1)
+        self.assertEqual([r["label"] for r in exact["references"]],["Exact item"])
+        shortlist = self.ask("creator_fit",source=source,days=2)
+        self.assertEqual([r["label"] for r in shortlist["references"]],["measured"])
+        self.assertIn("units / 1,000 views 200",shortlist["result"])

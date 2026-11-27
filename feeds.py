@@ -8,6 +8,7 @@ Unclassified feeds are held. Only enable licensed sources.
 """
 import argparse
 import csv
+from decimal import Decimal
 from datetime import datetime, timedelta, timezone
 import hashlib
 from io import StringIO
@@ -176,9 +177,9 @@ def parse(data, fmt):
         if fmt!="csv": raise
         raw=data.decode("gb18030")
     if fmt == "csv":
-        return csv.DictReader(StringIO(raw,newline=""),strict=True)
+        return analytics.csv_rows(StringIO(raw,newline=""))
     if fmt == "json":
-        values = json.loads(raw)
+        values = json.loads(raw, parse_float=Decimal)
         if isinstance(values,list):
             return values
     raise ValueError("JSON 须为记录数组，CSV 须含列名")

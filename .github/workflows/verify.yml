@@ -7,6 +7,59 @@ on:
 permissions:
   contents: read
 jobs:
+  assistant-eval:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: qa/assistant-eval/package-lock.json
+      - run: npm ci --prefix qa/assistant-eval --no-audit --no-fund
+      - run: npm test --prefix qa/assistant-eval
+      - run: python3 qa/assistant-eval/test_budget.py
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: assistant-eval-synthetic
+          path: qa/assistant-eval/reports/*.json
+          if-no-files-found: ignore
+  research:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: qa/package-lock.json
+      - run: npm ci --prefix qa
+      - run: qa/node_modules/.bin/playwright-core install --with-deps chromium
+      - run: npm run --prefix qa test:research
+  supplier:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      RUNTIME__DLTHUB_TELEMETRY: "false"
+      TIKFLOWSO_ENV_FILE: /dev/null
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: pip
+          cache-dependency-path: connectors/dlt-requirements.txt
+      - run: python -m pip install -r connectors/dlt-requirements.txt
+      - run: python -m unittest -v qa.dlt_supplier_acceptance
   candidate:
     runs-on: ubuntu-latest
     steps:

@@ -23,6 +23,7 @@ RUN python -c "import sqlite3; assert sqlite3.sqlite_version_info == (3,54,1)"
 WORKDIR /app
 ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1 TIKFLOWSO_ENV_FILE=/app/.data/service.env
 COPY *.py ./
+COPY connectors/*.py connectors/
 COPY web/ web/
 COPY extension/ extension/
 COPY qa/samples/vision/ qa/samples/vision/

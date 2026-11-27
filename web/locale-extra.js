@@ -1,5 +1,18 @@
 // Additional interface copy for tools, imports and platform administration.
 export default {
+  "选品判断":"Product decision","本期":"This period","上期":"Previous period","环比":"Period change",
+  "入选或暂缓的理由":"Reason to shortlist or defer","保存选品判断":"Save product decision",
+  "查看已保存的判断":"View saved decisions","选品判断已保存":"Product decision saved",
+  "已保存的选品判断":"Saved product decisions","保存时的依据":"Evidence at the time of saving",
+  "证据版本":"Evidence version","复核当前数据":"Compare with current data","依据已更新":"Evidence has changed","下载判断依据":"Download evidence",
+  "与保存时一致":"Matches the saved evidence","更早的判断":"Earlier decisions",
+  "窗口内关联视频":"Videos linked during this period","来源未记录关联视频。":"The source recorded no linked videos.",
+  "日快照不完整，环比不可比。":"Daily coverage is incomplete. Period changes are unavailable.",
+  "当前窗口已无此商品记录。":"This product no longer has observations in this period.",
+  "数据已修订，请刷新商品详情并核对后再保存":"The data changed. Refresh the product detail and check it before saving.",
+  "首次打开商品榜":"First ranking visits","五分钟内完成":"Completed in five minutes","五分钟完成率":"Five-minute completion rate",
+  "活跃指查看过商品榜或详情，或在当天完成选品。完成选品指同一研究窗口查榜和详情后，收藏商品、保存判断或导出榜单。跨日复访按本周至少两个研究日统计。":"Active workspaces viewed a ranking or a product, or completed research that day. Completion requires a ranking, a product detail, and a save, decision or export in the same research scope. Returning workspaces researched on two or more days this week.",
+  "五分钟完成率以本周首次打开该类来源商品榜的工作区为分母，包含未完成者。自首次入榜计满 300 秒，跨 UTC 截止日的完成仍计入首访周。":"The denominator is every workspace that first opened a product ranking in this source cohort this week, including unfinished visits. Each first visit gets 300 seconds. Completions across the UTC cutoff count toward the week of the first visit.",
   "工作区监控额度已用完":"This workspace has used all its monitoring slots.",
   "套餐基础额度":"Base plan capacity","本月审批加额":"Approved extra slots this month","查看订阅套餐":"View subscription plans","按月申请额外监控名额":"Request extra monitoring slots for this month",
   "工作区所有者可提交用途与数量，由平台管理员审批。审批加额于当月 UTC 月末到期。超出额度时按创建顺序保留较早的任务；其余任务结束，历史记录可继续查看。":"The workspace owner can request a quantity with a business reason. Platform-approved slots expire at the end of the UTC month. If capacity drops, the oldest active monitors continue and the rest end with their history retained.",

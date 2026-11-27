@@ -1,6 +1,8 @@
 """Offline acceptance for PRD §10, including restart, tenancy, and ledger corrections."""
 import hashlib
 import hmac
+import csv
+import io
 from datetime import date, datetime, timedelta, timezone
 from email.parser import BytesParser
 from http.server import BaseHTTPRequestHandler, HTTPServer
@@ -96,10 +98,39 @@ class LocalAcceptance(unittest.TestCase):
         with self.db: ws.ranking_presets(self.db,self.a,{**saved,"remove":True},True)
         self.assertFalse(ws.ranking_presets(self.db,self.a,{"kind":"products"})["items"])
 
+    def test_cent_apart_totals_rank_filter_and_export_without_float_ties(self):
+        source = "cent-ranking"
+        query = {"source":source,"market":"US","kind":"products","days":1}
+        low, high = "99999999999999.01", "99999999999999.02"
+        base = {"kind":"products","market":"US","name":"product","date":"2026-11-01","sales":2}
+        rows = [{**base,"id":ident,"gmv":amount,"price":amount} for ident,amount in (("a",low),("z",high))]
+        with self.db:
+            analytics.import_rows(self.db, rows, source, shared=True)
+        def rank(**filters):
+            return analytics.handle(self.db, "/api/rankings", {**query,**filters})["items"]
+        self.assertEqual([(r["id"], r["gmv_exact"]) for r in rank()], [("z",high),("a",low)])
+        self.assertEqual([r["id"] for r in rank(min_gmv=high)], ["z"])
+        self.assertEqual([r["id"] for r in rank(max_price=low)], ["a"])
+        data, _ = server.csv_export(self.db, query)
+        records = csv.DictReader(io.StringIO(data.decode("utf-8-sig")))
+        self.assertEqual([(r["rank"],r["id"],r["gmv"]) for r in records], [("1","z",high),("2","a",low)])
+        job = self.queue(query)
+        self.assertTrue(export_jobs.run_one(self.connect))
+        _, blob = export_jobs.file_for(self.db, self.a, job)
+        with blob:
+            self.assertEqual(blob.read(), data)
+        # More than 2000 leading rows switches pagination to its SQLite disk sort.
+        with self.db:
+            analytics.import_rows(self.db, ({**base,"id":f"big{i}","gmv":10**14} for i in range(2000)), source, shared=True)
+        self.assertEqual([r["id"] for r in rank(page=1001,limit=2)], ["z","a"])
+
     def test_export_recovery_idempotency_csv_and_quota(self):
         query={"source":"demo","market":"US","kind":"creators","days":"7","sort":"follower_growth"}
         job=self.queue(query)
         self.assertEqual(self.queue(query),job)
+        with self.assertRaises(ws.RequestError) as conflict:
+            self.queue({**query,"sort":"sales"})
+        self.assertEqual(conflict.exception.status,409)
         with self.db: self.db.execute("UPDATE export_jobs SET state='running',lease='abandoned',expiry=0")
         self.assertTrue(export_jobs.run_one(self.connect))
         self.assertFalse(export_jobs.run_one(self.connect))
@@ -143,6 +174,20 @@ class LocalAcceptance(unittest.TestCase):
         analytics.import_rows(self.db,[row],"reviews")
         report=analytics.handle(self.db,"/api/detail",{"id":"p","kind":"products","source":"reviews"})
         self.assertEqual(report["item"]["review_sentiment"],result)
+
+    def test_forecast_retains_one_cent_change_across_large_daily_totals(self):
+        start = date(2026, 9, 1)
+        base = {"kind":"products","market":"US","name":"test","sales":1}
+        def records():
+            for i in range(14):
+                day = str(start + timedelta(days=i))
+                for n in range(929):
+                    yield {**base,"date":day,"id":str(n),"gmv":"100000000000000.00"}
+                yield {**base,"date":day,"id":"changed","gmv":"99999999999999.01" if i<7 else "99999999999999.02"}
+        analytics.import_rows(self.db, records(), "forecast-large", shared=True)
+        study = insights.study(self.db, {"market":"US","source":"forecast-large","group":"category"})
+        self.assertEqual(study["mae"]["gmv"], 0.01)
+        self.assertEqual(study["forecast"][0]["gmv_exact"], "92999999999999999.02")
 
     def test_forecast_holdout_coverage_and_cutoff(self):
         start=date(2026,1,1)

@@ -14,6 +14,7 @@ import secrets
 import threading
 import zipfile
 from contextlib import closing, ExitStack
+from decimal import Decimal
 import model_spend
 import operations
 import recycle
@@ -22,6 +23,7 @@ import uuid
 import time
 from http.cookies import SimpleCookie
 from http.server import BaseHTTPRequestHandler
+from itertools import islice
 from pathlib import Path
 from urllib.parse import parse_qs, quote, unquote, urlsplit
 
@@ -37,12 +39,16 @@ import studio
 import stream
 import export_jobs
 import insights
+import inspiration
+import daily_references
 import notifications
 import transcription
 import vision
 import platform_admin
 import control_settings
 import research_usage
+import source_reconciliation
+import research_decisions
 import support_cases
 import settings
 import workspace as ws
@@ -68,9 +74,12 @@ def initialize():
         if db.execute("PRAGMA journal_mode="+mode).fetchone()[0].upper()!=mode:
             raise RuntimeError("数据库未能启用安全日志模式")
         analytics.init(db)
+        source_reconciliation.init(db)
+        daily_references.init(db)
         feeds.schema(db)
         operations.init(db)
         research_usage.init(db)
+        research_decisions.init(db)
         ws.init(db)
         assistant_chats.init(db)
         support_cases.init(db)
@@ -83,10 +92,25 @@ def initialize():
         db.execute("PRAGMA user_version=1")
 
 
-def body_json(raw):
-    value = json.loads(raw or b"{}")
+def body_json(raw, *, precise=False):
+    value = json.loads(raw or b"{}", parse_float=Decimal if precise else float)
     if not isinstance(value,dict): raise ValueError("请求体必须为 JSON 对象")
     return value
+
+
+def snapshot_rows(data, *, allow_rows=False):
+    formats = [key for key in ("json", "csv", "rows") if key in data]
+    if len(formats) != 1 or (formats[0] == "rows" and not allow_rows):
+        raise ValueError("请只提供一种快照数据格式")
+    key = formats[0]
+    if key == "rows":
+        return data[key]
+    if not isinstance(data[key], str):
+        raise ValueError("快照文件内容须为文本")
+    content = data[key].removeprefix("\ufeff")
+    if key == "csv":
+        return list(analytics.csv_rows(io.StringIO(content, newline="")))
+    return json.loads(content, parse_float=Decimal)
 
 
 def csv_safe(value):
@@ -97,20 +121,17 @@ class QueueExport(Exception):
     pass
 
 
-def csv_export(db,params):
-    first = analytics.scope_for(db,params)
+def csv_export(db,params,*,scope=None):
+    first = analytics.scope_for(db,params) if scope is None else scope
     kind=params.get("kind") or "products"
-    _, accepts=analytics.ranking_filter(kind,params)
-    matches=[]
-    for row in analytics.iter_rows(db,first):
-        if accepts(row):
-            matches.append(row)
-            if len(matches)>1000:
-                raise QueueExport
-    rows = analytics.leaderboard(matches,kind,params)
+    metric,rows=analytics.ranking_rows(db,first,{**params,"kind":kind})
+    matches=list(islice(rows,1001))
+    if len(matches)>1000:
+        raise QueueExport
+    matches.sort(key=analytics.ranking_order(metric))
     out = io.StringIO()
-    export_jobs.write_csv(out,first,rows)
-    return out.getvalue().encode("utf-8-sig"),len(rows)
+    export_jobs.write_csv(out,first,matches)
+    return out.getvalue().encode("utf-8-sig"),len(matches)
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -337,9 +358,11 @@ class Handler(BaseHTTPRequestHandler):
                     if path=="/api/export":
                         db.commit()
                         db.execute("BEGIN")
-                        try: blob,row_count=csv_export(db,params)
+                        export_scope=analytics.scope_for(db,params)
+                        try: blob,row_count=csv_export(db,params,scope=export_scope)
                         except QueueExport:
                             db.rollback()
+                            params={**params,"date":export_scope["date"]}
                             key=ws.digest(json.dumps(params,sort_keys=True)+str(ws.now()//60))
                             result=export_jobs.submit(db,user,{"params":params,"request_key":key})
                             db.commit()
@@ -350,25 +373,30 @@ class Handler(BaseHTTPRequestHandler):
                         ws.check_source(db,user,params.get("source","demo"))
                         ws.consume(db,user,"export_rows",row_count)
                         if row_count and params.get("kind","products")=="products":
-                            research_usage.record(db,ws.workspace(user),analytics.scope_for(db,params),"export")
+                            research_usage.record(db,ws.workspace(user),export_scope,"export")
                         db.commit()
                         return self.reply(200,blob,"text/csv; charset=utf-8",{"Content-Disposition":'attachment; filename="tikflowso-rankings.csv"'})
                     data=self.read(db,user,path,params)
-                    if not v1 and params.get("kind","products")=="products" and (
-                        path=="/api/detail" or (path=="/api/rankings" and data["total"]>0)):
+                    if not v1 and params.get("kind","products")=="products" and path in ("/api/detail","/api/rankings"):
                         db.commit()
                         research_usage.record(db,ws.workspace(user),data,"detail" if path=="/api/detail" else "list",params.get("id",""))
                 else:
-                    data=self.write(db,user,path,body_json(raw))
+                    data=self.write(db,user,path,body_json(raw, precise=path=="/api/import"))
         self.reply(200,data)
 
     def read(self,db,user,path,params):
+        if path=="/api/research-decisions":return research_decisions.read(db,user,params)
         if path=="/api/monitor-capacity":return ws.monitor_capacity.history(db,user,params)
         if path=="/api/plans":return ws.LIMITS
         if path=="/api/assistant/skills":return studio.research_skills.catalog()
         if path=="/api/assistant/chats":return assistant_chats.history(db,user,params.get("chat"))
         if path=="/api/support": return support_cases.handle(db,user,params)
         if path=="/api/ranking-presets": return ws.ranking_presets(db,user,params)
+        if path=="/api/inspiration":
+            if not db.in_transaction: db.execute("BEGIN")
+            return inspiration.board(db,params)
+        if path=="/api/inspiration/videos":
+            return daily_references.edition(db,params)
         if path=="/api/exports": return export_jobs.listing(db,user)
         if path=="/api/trend-study":
             if not db.in_transaction: db.execute("BEGIN")
@@ -378,6 +406,11 @@ class Handler(BaseHTTPRequestHandler):
             if path=="/api/detail": ws.consume(db,user,"detail_views")
             if not db.in_transaction: db.execute("BEGIN")
             data=analytics.handle(db,path,params)
+            if path=="/api/rankings" and params.get("kind","products")=="products":
+                data["reconciliation"]=source_reconciliation.report(db,data["source"],data["market"],
+                                                                   data["start_date"],data["date"])
+            if path=="/api/detail" and data["item"]["kind"]=="products":
+                data["decision_evidence"]=research_decisions.evidence(db,data,data["item"]["id"],data["related"])
             if path=="/api/overview" and (preview:=data.get("live_preview",{}).get("room")):
                 bounded = bool(preview["start_at"] and preview["end_at"])
                 if bounded or not preview["series"]:
@@ -455,15 +488,13 @@ class Handler(BaseHTTPRequestHandler):
                 raise
 
     def write(self,db,user,path,data):
+        if path=="/api/research-decisions":return research_decisions.save(db,user,data)
         if path=="/api/monitor-capacity":return ws.monitor_capacity.request(db,user,data)
         if path=="/api/normalize-snapshots":
             ws.admin(user)
-            raw=data.get("csv")
-            try:
-                rows=list(csv.DictReader(io.StringIO(raw.lstrip("\ufeff")),strict=True)) if isinstance(raw,str) else json.loads(data["json"])
-            except (KeyError,csv.Error,TypeError) as exc:
-                raise ValueError("JSON 须为记录数组，CSV 须含列名") from exc
-            return analytics.daily_from_counters(rows)
+            converted = analytics.daily_from_counters(snapshot_rows(data))
+            # Unchanged source fields can carry exact Decimal prices through the conversion.
+            return json.dumps(converted, ensure_ascii=False, allow_nan=False, default=str).encode()
         if path=="/api/admin-handoff":
             ws.signed_in(user)
             token=secrets.token_urlsafe(32)
@@ -568,9 +599,7 @@ class Handler(BaseHTTPRequestHandler):
             filename=ws.ident(data.get("filename") or "快照",180)
             actor=ws.workspace(user)
             try:
-                rows=data.get("rows")
-                if "json" in data: rows=json.loads(data["json"])
-                if isinstance(data.get("csv"),str): rows=list(csv.DictReader(io.StringIO(data["csv"].lstrip("\ufeff")),strict=True))
+                rows=snapshot_rows(data, allow_rows=True)
                 if not isinstance(rows,list) or not 1<=len(rows)<=20000: raise ValueError("每批需包含 1 至 20000 条记录")
                 if not db.in_transaction: db.execute("BEGIN IMMEDIATE")
                 result=analytics.import_rows(db,rows,source,owner=ws.workspace(user))

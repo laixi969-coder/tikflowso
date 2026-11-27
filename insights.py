@@ -43,19 +43,23 @@ def study(db,params):
     dates=[(end-timedelta(days=i)).isoformat() for i in reversed(range(28))]
     args={**scope,"begin":dates[0],"kind":"products" if group=="category" else "videos","topic":topic}
     condition=f" AND {group}=:topic" if topic else ""
-    rows=db.execute(f"""SELECT date,SUM(gmv_units),SUM(sales),COUNT(DISTINCT id) FROM analytics_daily
+    rows=analytics.sum_rows(db,f"""SELECT date,SUM(gmv_units),SUM(sales),COUNT(DISTINCT id) FROM analytics_daily
                       WHERE source=:source AND market=:market AND kind=:kind AND date BETWEEN :begin AND :date
                       {condition} GROUP BY date ORDER BY date""",args)
-    daily={r[0]:{"gmv":r[1]/100,"sales":r[2],"objects":r[3]} for r in rows}
+    cents = {stamp:amount for stamp,amount,_,_ in rows}
+    daily={stamp:{"gmv":amount/100,"sales":sales,"objects":objects,**analytics.exact_amounts(gmv=amount)}
+           for stamp,amount,sales,objects in rows}
     missing=[stamp for stamp in dates if stamp not in daily]
     horizon=[]
     mae=None
     if all(stamp in daily for stamp in dates[-14:]):
-        mae={m:round(sum(abs(daily[dates[i]][m]-daily[dates[i-7]][m]) for i in range(21,28))/7,2)
-             for m in ("gmv","sales")}
+        comparable = list(zip(dates[-7:], dates[-14:-7]))
+        error_cents = analytics.average_cents(sum(abs(cents[a]-cents[b]) for a,b in comparable), 7)
+        mae={"gmv":error_cents/100,"sales":round(sum(abs(daily[a]["sales"]-daily[b]["sales"]) for a,b in comparable)/7,2),
+             **analytics.exact_amounts(gmv=error_cents)}
         for n,stamp in enumerate(dates[-7:],1):
             horizon.append({"date":(end+timedelta(days=n)).isoformat(),
-                            **{k:daily[stamp][k] for k in ("gmv","sales")}})
+                            **{k:v for k,v in daily[stamp].items() if k!="objects"}})
     return {**scope,"group":group,"topic":topic,"method":"weekly-naive-v1","sample_start":dates[0],
             "observed_days":len(daily),"missing_dates":missing,"mae":mae,"forecast":horizon,
             "series":[{"date":d,"gmv":None,"sales":None,"objects":None,**daily.get(d,{})} for d in dates]}

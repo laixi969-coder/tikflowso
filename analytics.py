@@ -22,6 +22,8 @@ MARKETS = {
 }
 DEMO_END = date(2026, 11, 19)
 DEMO_DAYS = 75
+# Below this threshold every cent survives conversion to a float in major units and back.
+EXACT_MONEY_THRESHOLD = 2**51
 SORTS = {"gmv", "sales", "views", "followers", "growth", "follower_growth"}
 RANGE_METRICS = {"gmv": KINDS, "sales": KINDS, "price": ("products",),
                  "followers": ("creators",), "views": ("creators","videos","lives")}
@@ -51,6 +53,8 @@ CREATE TABLE IF NOT EXISTS analytics_daily(
   FOREIGN KEY(source,market,kind,id) REFERENCES analytics_entities(source,market,kind,id)
 ) WITHOUT ROWID;
 CREATE INDEX IF NOT EXISTS analytics_scope ON analytics_daily(source,market,date,kind);
+CREATE INDEX IF NOT EXISTS video_product_dates ON analytics_daily(source,market,product_id,date,id)
+  WHERE kind='videos' AND product_id!='';
 CREATE TABLE IF NOT EXISTS snapshot_revisions (
  revision INTEGER PRIMARY KEY, source TEXT NOT NULL, market TEXT NOT NULL, kind TEXT NOT NULL,
  id TEXT NOT NULL, date TEXT NOT NULL, changed_at INTEGER NOT NULL, before_json TEXT NOT NULL, after_json TEXT NOT NULL
@@ -82,15 +86,48 @@ def numeric(raw, field, *, required=False, money=False, signed=False):
         return None
     try:
         number = Decimal(str(raw))
-        if not number.is_finite() or abs(number) > 10**14 or (number < 0 and not signed):
+        if not number.is_finite() or number.copy_abs() > 10**14 or (number < 0 and not signed):
             raise ValueError
         if money:
-            number *= 100
+            fixed = number.quantize(Decimal("0.01"))
+            if number != fixed:
+                raise ValueError
+            return int(fixed * 100)
         if number != number.to_integral_value():
             raise ValueError
         return int(number)
     except (ValueError, InvalidOperation, OverflowError):
         raise ValueError(f"{field} 的数值或精度无效") from None
+
+
+def csv_rows(stream):
+    reader = csv.DictReader(stream, strict=True)
+    try:
+        names = reader.fieldnames or []
+        if not names or any(not name.strip() for name in names) or len(set(names)) != len(names):
+            raise ValueError("CSV 表头为空或存在重复列")
+        for row in reader:
+            if None in row or None in row.values():
+                raise ValueError(f"CSV 第 {reader.line_num} 行列数与表头不一致")
+            yield row
+    except csv.Error as exc:
+        raise ValueError(f"CSV 第 {reader.reader.line_num} 行格式无效：{exc}") from None
+
+
+def money_text(cents):
+    return f"{cents // 100}.{cents % 100:02}"
+
+
+def exact_amounts(**amounts):
+    return {field + "_exact": money_text(cents) for field,cents in amounts.items()
+            if cents is not None and cents >= EXACT_MONEY_THRESHOLD}
+
+
+def profile_amount(cents):
+    if cents is None:
+        return None
+    # Retain the original cents for audit and reimport, including in JSON-encoded profiles.
+    return money_text(cents) if cents >= EXACT_MONEY_THRESHOLD else cents / 100
 
 
 
@@ -99,7 +136,7 @@ def profile_json(raw, kind):
         return None
     if isinstance(raw,str):
         try:
-            raw = json.loads(raw)
+            raw = json.loads(raw, parse_float=Decimal)
         except ValueError:
             raise ValueError("profile 不是有效的 JSON") from None
     if not isinstance(raw,dict):
@@ -161,7 +198,7 @@ def profile_json(raw, kind):
                 raise ValueError("同一直播日快照的商品 ID 须唯一，长度不超过 160")
             sales = numeric(entry.get("sales"),"live_products.sales")
             cents = numeric(entry.get("gmv"),"live_products.gmv",money=True)
-            linked[product] = {"id":product,"sales":sales,"gmv":None if cents is None else cents/100}
+            linked[product] = {"id":product,"sales":sales,"gmv":profile_amount(cents)}
         return list(linked.values())
     if "live_products" in raw:
         out["live_products"] = product_links(raw["live_products"])
@@ -183,7 +220,7 @@ def profile_json(raw, kind):
         if "enter_count" in block:
             session["enter_count"] = numeric(block["enter_count"],"enter_count",required=True)
         if "gmv" in block:
-            session["gmv"] = numeric(block["gmv"],"live_session.gmv",required=True,money=True)/100
+            session["gmv"] = profile_amount(numeric(block["gmv"],"live_session.gmv",required=True,money=True))
         if "products" in block:
             session["products"] = product_links(block["products"])
         if "online_viewers" in block:
@@ -548,9 +585,18 @@ def period_growth(current, previous):
     return round((current - previous) / previous * 100, 2)
 
 
-def iter_rows(db, s):
+def average_cents(amount, sales):
+    # Round once at the cent, using the same ties-to-even rule for all product evidence.
+    whole, remainder = divmod(amount, sales)
+    if 2 * remainder > sales or (2 * remainder == sales and whole % 2):
+        whole += 1
+    return whole
+
+
+def iter_rows(db, s, *, kind=None):
     # The last snapshot supplies historical labels and stock measures, independent of import order.
-    records = db.execute("""
+    kind_clause = "AND kind=:row_kind" if kind is not None else ""
+    records = db.execute(f"""
         WITH ranked AS (
           SELECT kind,id,name,subtitle,category,segment,tag,music,keyword,script,shop_id,creator_id,
             product_id,image_key,date AS updated_at,price_units,followers,
@@ -570,13 +616,13 @@ def iter_rows(db, s):
             SUM(CASE WHEN date<:start_date THEN gmv_units END) OVER frame AS prior,
             SUM(date<:start_date) OVER frame AS prior_days,
             MAX(CASE WHEN date=date(:start_date,'-1 day') THEN followers END) OVER frame AS baseline_followers
-          FROM analytics_daily WHERE source=:source AND market=:market AND date BETWEEN :prev_date AND :date
+          FROM analytics_daily WHERE source=:source AND market=:market AND date BETWEEN :prev_date AND :date {kind_clause}
           WINDOW frame AS (PARTITION BY kind,id ORDER BY date DESC ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING)
         ) SELECT kind,id,name,subtitle,category,segment,tag,music,keyword,script,shop_id,creator_id,
             product_id,image_key,updated_at,price_units,followers,gmv_units,sales,views,net,net_days,
             covered,prior,prior_days,baseline_followers,order_total AS orders,refund_total AS refund_units,estimated AS gmv_estimated
             FROM ranked WHERE seq=1 AND updated_at>=:start_date
-    """, s)
+    """, {**s,"row_kind":kind})
     for record in records:
         data = dict(record)
         units = data.pop("gmv_units")
@@ -590,8 +636,10 @@ def iter_rows(db, s):
             follower_change = data["followers"] - baseline
         else:
             follower_change = net if net_days == s["days"] else None
-        yield {**data, "gmv":units/100, "price":price/100 if price is not None else None,
-                    "avg_price":round(units / data["sales"]/100,2) if data["sales"] else None,
+        average = average_cents(units, data["sales"]) if data["sales"] else None
+        yield {**data, **exact_amounts(gmv=units,price=price,avg_price=average),
+                    "gmv":units/100, "price":price/100 if price is not None else None,
+                    "avg_price":average/100 if average is not None else None,
                     "growth":period_growth(units,previous) if covered==prior_days==s["days"] else None,
                     "follower_growth":follower_change, "covered_days":covered}
 
@@ -628,7 +676,7 @@ def ranking_filter(kind, params):
             key = f"{edge}_{field}"
             minor_units = field in ("gmv", "price")
             value = numeric(params.get(key), key, money=minor_units)
-            limits.append(value / 100 if value is not None and minor_units else value)
+            limits.append(value)
         low, high = limits
         if low is None and high is None:
             continue
@@ -641,31 +689,54 @@ def ranking_filter(kind, params):
     def accepts(row):
         return (row["kind"] == kind and matches(row) and in_segment(row)
                 and (not category or row["category"] == category or (row["category"] or "").startswith(category+" > "))
-                and all(row[k] is not None and (lo is None or row[k]>=lo) and (hi is None or row[k]<=hi)
+                and all((value := ranking_value(row,k)) is not None and (lo is None or value>=lo) and (hi is None or value<=hi)
                         for k,lo,hi in ranges))
     return sort, accepts
+
+
+def ranking_rows(db, scope, params):
+    kind = params.get("kind", "products")
+    metric, accepts = ranking_filter(kind, params)
+    # Kind is stable across both windows; name, segment and category are closing attributes.
+    return metric, filter(accepts, iter_rows(db, scope, kind=kind))
+
+
+def ranking_value(row, metric):
+    value = row[metric]
+    if metric not in ("gmv", "price") or value is None:
+        return value
+    exact = row.get(metric + "_exact")
+    if exact is not None:
+        return int(exact.replace(".", ""))
+    return round(value * 100)
+
+
+def ranking_order(metric):
+    def key(row):
+        value = ranking_value(row, metric)
+        return value is None, -(value or 0), row["id"]
+    return key
 
 
 def ranking_page(db, scope, params):
     page=int_param(params,"page",1,10**9)
     limit=int_param(params,"limit",20,1000)
     start=(page-1)*limit
-    metric,accepts=ranking_filter(params.get("kind","products"),params)
+    metric,filtered=ranking_rows(db,scope,params)
     total=0
     def matches():
         nonlocal total
-        for row in iter_rows(db,scope):
-            if accepts(row):
-                total+=1
-                yield row
+        for row in filtered:
+            total+=1
+            yield row
     if start+limit<=2000:
-        top=heapq.nsmallest(start+limit,matches(),key=lambda r:(r[metric] is None,-(r[metric] or 0),r["id"]))
+        top=heapq.nsmallest(start+limit,matches(),key=ranking_order(metric))
         selected=top[start:]
     else:
         # Deep pages use a connection-private disk sort. This never writes to the main database.
         db.execute("CREATE TEMP TABLE IF NOT EXISTS page_sort(value NUMERIC,id TEXT,record TEXT)")
         db.execute("DELETE FROM temp.page_sort")
-        db.executemany("INSERT INTO temp.page_sort VALUES(?,?,?)",((r[metric],r["id"],json.dumps(r,ensure_ascii=False)) for r in matches()))
+        db.executemany("INSERT INTO temp.page_sort VALUES(?,?,?)",((ranking_value(r,metric),r["id"],json.dumps(r,ensure_ascii=False)) for r in matches()))
         selected=[json.loads(r[0]) for r in db.execute("SELECT record FROM temp.page_sort ORDER BY value IS NULL,value DESC,id LIMIT ? OFFSET ?",(limit,start))]
     return {**scope,"items":[{**r,"rank":start+i} for i,r in enumerate(selected,1)],"total":total,"page":page,"limit":limit}
 
@@ -673,10 +744,42 @@ def ranking_page(db, scope, params):
 def leaderboard(rows, kind, params, *, limit=None):
     sort, accepts = ranking_filter(kind, params)
     matches = (row for row in rows if accepts(row))
-    def order(row):
-        return row[sort] is None, -(row[sort] or 0), row["id"]
+    order = ranking_order(sort)
     selected = sorted(matches,key=order) if limit is None else heapq.nsmallest(limit,matches,key=order)
     return [{**row, "rank":i} for i,row in enumerate(selected,1)]
+
+
+class WideSum:
+    """Sum nonnegative daily integer measures beyond SQLite's signed 64-bit limit."""
+    def __init__(self):
+        self.total = None
+
+    def step(self, value):
+        if value is not None:
+            self.total = (self.total or 0) + value
+
+    def finalize(self):
+        if self.total is None or self.total < 2**63:
+            return self.total
+        # SQLite sorts blobs after integers. Fixed-width big-endian bytes preserve ordering
+        # among large totals. A table has at most 2**63 rows, each holding at most 2**63-1.
+        return self.total.to_bytes(16, "big")
+
+
+def sum_rows(db, sql, params):
+    try:
+        return db.execute(sql, params).fetchall()
+    except sqlite3.OperationalError as exc:
+        if str(exc) != "integer overflow":
+            raise
+    db.create_aggregate("wide_sum", 1, WideSum)
+    cursor = db.cursor()
+    factory = cursor.row_factory
+    def unpack(cursor, values):
+        decoded = tuple(int.from_bytes(v, "big") if isinstance(v, bytes) else v for v in values)
+        return factory(cursor, decoded) if factory else decoded
+    cursor.row_factory = unpack
+    return cursor.execute(sql.replace("SUM(", "wide_sum("), params).fetchall()
 
 
 def daily_trend(db, s, item=None):
@@ -686,8 +789,9 @@ def daily_trend(db, s, item=None):
                     AND kind=:kind AND id=:id ORDER BY date""",{**s,"kind":item["kind"],"id":item["id"]})
         points = []
         for stamp,gmv,sales,views,price in rows:
-            point = {"date":stamp,"gmv":gmv/100,"sales":sales,"views":views}
-            if item["kind"]=="products": point["price"]=None if price is None else price/100
+            point = {"date":stamp,"gmv":gmv/100,"sales":sales,"views":views,**exact_amounts(gmv=gmv)}
+            if item["kind"]=="products":
+                point.update(price=None if price is None else price/100, **exact_amounts(price=price))
             points.append(point)
         return points
     else:
@@ -698,12 +802,12 @@ def daily_trend(db, s, item=None):
                     AND date BETWEEN :start_date AND :date AND (:category='' OR category=:category)
                   GROUP BY date ORDER BY date"""
         args = {"category":"",**s}
-    return [{"date":stamp, "gmv":g/100 if g is not None else None, "sales":sales, "views":views}
-            for stamp,g,sales,views in db.execute(mode,args)]
+    return [{"date":stamp, "gmv":g/100 if g is not None else None, "sales":sales, "views":views,**exact_amounts(gmv=g)}
+            for stamp,g,sales,views in sum_rows(db,mode,args)]
 
 
 def overview_period(db, args):
-    result = db.execute("""
+    result = sum_rows(db,"""
         SELECT SUM(CASE WHEN kind='products' THEN gmv_units END),
                SUM(CASE WHEN kind='products' THEN sales END),
                SUM(CASE WHEN kind IN ('videos','lives') THEN views END),
@@ -716,13 +820,14 @@ def overview_period(db, args):
                COUNT(DISTINCT CASE WHEN kind='shops' THEN date END)
         FROM analytics_daily WHERE source=:source AND market=:market AND date BETWEEN :start_date AND :date
           AND (:category='' OR category=:category)
-    """,args).fetchone()
+    """,args)[0]
     gmv,sales,views,creators,pdays,vdays,cdays,active_products,active_shops,sdays = result
+    average = average_cents(gmv,sales) if sales else None
     return ({"gmv":None if gmv is None else gmv/100,"sales":sales,"views":views,
-             "creators":creators if cdays else None},
+             "creators":creators if cdays else None, **exact_amounts(gmv=gmv)},
             {"gmv":pdays,"sales":pdays,"views":vdays,"creators":cdays},
             {"active_products":active_products if pdays else None, "active_shops":active_shops if sdays else None,
-             "avg_price":round(gmv / 100 / sales, 2) if sales else None})
+             "avg_price":average / 100 if average is not None else None, **exact_amounts(avg_price=average)})
 
 
 def groups_for(db, s, group, include_examples=False):
@@ -730,7 +835,7 @@ def groups_for(db, s, group, include_examples=False):
         raise ValueError("趋势分组不受支持")
     kind = "products" if group=="category" else "videos"
     # The allowlisted column is grouped at day grain so a changed attribution never rewrites the past.
-    entries = [dict(r) for r in db.execute(f"""
+    entries = [dict(r) for r in sum_rows(db,f"""
         SELECT {group} AS name,SUM(gmv_units) AS units,SUM(sales) AS sales,SUM(views) AS views,
                MAX(gmv_estimated=1) AS includes_estimates,
                COUNT(DISTINCT id) AS count FROM analytics_daily
@@ -755,12 +860,13 @@ def groups_for(db, s, group, include_examples=False):
         """
         for label,ident,title,units,sales,views in db.execute(example_sql,{**s,"kind":kind}):
             examples.setdefault(label,[]).append({"id":ident,"name":title,"kind":kind,
-                                                  "gmv":units/100,"sales":sales,"views":views})
-    total = db.execute("""SELECT SUM(gmv_units) FROM analytics_daily WHERE source=:source AND market=:market
-        AND kind=:kind AND date BETWEEN :start_date AND :date""",{**s,"kind":kind}).fetchone()[0]
+                                                  "gmv":units/100,"sales":sales,"views":views,**exact_amounts(gmv=units)})
+    total = sum_rows(db,"""SELECT SUM(gmv_units) FROM analytics_daily WHERE source=:source AND market=:market
+        AND kind=:kind AND date BETWEEN :start_date AND :date""",{**s,"kind":kind})[0][0]
     for e in entries:
         units = e.pop("units")
         e["gmv"] = units/100
+        e.update(exact_amounts(gmv=units))
         e["share"] = round(units/total*100,2) if total else None
         if include_examples:
             e["examples"] = examples.get(e["name"],[])
@@ -769,8 +875,8 @@ def groups_for(db, s, group, include_examples=False):
 
 def market_structure(rows):
     products = [r for r in rows if r["kind"]=="products"]
-    total = sum(r["gmv"] for r in products)
-    priced = sorted((r for r in products if r["price"] is not None),key=lambda r:(r["price"],r["id"]))
+    total = sum(ranking_value(r,"gmv") for r in products)
+    priced = sorted((r for r in products if r["price"] is not None),key=lambda r:(ranking_value(r,"price"),r["id"]))
     # Equal prices stay together even when several quartile boundaries coincide.
     bands = []
     offset = 0
@@ -778,37 +884,66 @@ def market_structure(rows):
         end = math.ceil(len(priced)*quartile/4)
         if end <= offset:
             continue
-        while end<len(priced) and priced[end]["price"]==priced[end-1]["price"]:
+        while end<len(priced) and ranking_value(priced[end],"price")==ranking_value(priced[end-1],"price"):
             end+=1
         part = priced[offset:end]
-        amount = round(sum(r["gmv"] for r in part),2)
+        amount = sum(ranking_value(r,"gmv") for r in part)
         bands.append({"min":part[0]["price"],"max":part[-1]["price"],"count":len(part),
-                      "gmv":amount,"sales":sum(r["sales"] for r in part),
+                      "gmv":amount/100,"sales":sum(r["sales"] for r in part),
+                      **exact_amounts(gmv=amount,min=ranking_value(part[0],"price"),max=ranking_value(part[-1],"price")),
                       "share":round(amount/total*100,2) if total else None})
         offset = end
     concentration = {"product_count":len(products),"top3_share":None,
                      "shop_count":0,"shop_top3_share":None}
     if total:
-        concentration["top3_share"] = round(sum(sorted((r["gmv"] for r in products),reverse=True)[:3])/total*100,2)
-    shop_values = sorted((r["gmv"] for r in rows if r["kind"]=="shops"),reverse=True)
+        concentration["top3_share"] = round(sum(sorted((ranking_value(r,"gmv") for r in products),reverse=True)[:3])/total*100,2)
+    shop_values = sorted((ranking_value(r,"gmv") for r in rows if r["kind"]=="shops"),reverse=True)
     concentration["shop_count"] = len(shop_values)
     if sum(shop_values):
         concentration["shop_top3_share"] = round(sum(shop_values[:3])/sum(shop_values)*100,2)
     return {"price_bands":bands,"concentration":concentration}
 
 
-def related_to(target, rows):
+def product_video_links(db, scope, kind, ident):
+    """Window-scoped links observed on video days, without inferring product sales."""
+    if kind == "products":
+        match, other, related_kind = "product_id", "id", "videos"
+    elif kind == "videos":
+        match, other, related_kind = "id", "product_id", "products"
+    else:
+        return []
+    links = db.execute(f"""
+        WITH links AS (
+          SELECT {other} AS linked_id,MIN(date) AS first_seen,MAX(date) AS last_seen,COUNT(*) AS linked_days
+          FROM analytics_daily WHERE source=:source AND market=:market AND kind='videos'
+            AND product_id!='' AND {match}=:ident AND date BETWEEN :start_date AND :date GROUP BY {other}
+        )
+        SELECT d.id,d.name,d.kind,d.image_key,l.first_seen,l.last_seen,l.linked_days FROM links l
+        JOIN analytics_daily d ON d.source=:source AND d.market=:market AND d.kind=:related_kind AND d.id=l.linked_id
+          AND d.date=(SELECT MAX(s.date) FROM analytics_daily s WHERE s.source=:source AND s.market=:market
+            AND s.kind=:related_kind AND s.id=l.linked_id AND s.date BETWEEN :start_date AND :date)
+        ORDER BY l.last_seen DESC,l.linked_days DESC,d.id""", {**scope,"related_kind":related_kind,"ident":ident})
+    return [dict(row) for row in links]
+
+
+def related_to(target, rows, db, scope):
     field = {"products":"product_id","shops":"shop_id","creators":"creator_id"}
+    counterpart = {"products":"videos","videos":"products"}.get(target["kind"])
+    observed = {r["id"]:r for r in product_video_links(db,scope,target["kind"],target["id"])}
     result = []
     for candidate in rows:
         if candidate["kind"] == target["kind"]:
+            continue
+        if candidate["kind"] == counterpart:
+            if candidate["id"] in observed:
+                result.append({**candidate, **observed[candidate["id"]]})
             continue
         inward = field.get(target["kind"])
         outward = field.get(candidate["kind"])
         if ((inward and candidate[inward] == target["id"]) or
                 (outward and target[outward] == candidate["id"])):
             result.append(candidate)
-    return sorted(result,key=lambda r:(KINDS.index(r["kind"]),-r["gmv"],r["id"]))
+    return sorted(result,key=lambda r:(KINDS.index(r["kind"]),-ranking_value(r,"gmv"),r["id"]))
 
 
 def live_analysis(db, scope, item, rows, ranking):
@@ -836,6 +971,9 @@ def live_analysis(db, scope, item, rows, ranking):
                     entry[key] += Decimal(str(value)) if key=="gmv" else value
     for entry in attributed.values():
         if entry["gmv"] is not None:
+            cents = int(entry["gmv"] * 100)
+            if cents >= EXACT_MONEY_THRESHOLD:
+                entry["gmv_exact"] = money_text(cents)
             entry["gmv"] = float(entry["gmv"])
     similar = [r for r in ranking if r["id"]!=item["id"] and item["category"] and r["category"]==item["category"]][:5]
     return {"products":list(attributed.values()),"similar":similar}
@@ -852,7 +990,7 @@ def board_live(db, scope, rows, top, requested):
         snapshots[row["id"]] = json.loads(raw) if raw else {}
         session = snapshots[row["id"]].get("live_session",{})
         rooms.append({"id":row["id"],"name":row["name"],"rank":row["rank"],"period_gmv":row["gmv"],
-                      "period_estimated":bool(row["gmv_estimated"]),
+                      "period_estimated":None if row["gmv_estimated"] is None else bool(row["gmv_estimated"]),
                       "session_gmv":session.get("gmv"),"enter_count":session.get("enter_count")})
     identifier = requested if requested in snapshots else rooms[0]["id"]
     room = catalog["lives",identifier]
@@ -909,7 +1047,7 @@ def market_comparison(db,params):
     scoped = {**params,"market":"US","date":params.get("date") or latest}
     scope = scope_for(db,scoped)
     base,rates = exchange_rates(scope["date"])
-    samples = db.execute("""
+    samples = sum_rows(db,"""
         WITH available AS (
           SELECT DISTINCT market FROM analytics_entities WHERE source=:source
         ), totals AS (
@@ -934,8 +1072,9 @@ def market_comparison(db,params):
         rate = rates.get(currency)
         amount = Decimal(units)/100 if units is not None else None
         converted = round(amount*rate,2) if amount is not None and rate is not None else None
+        average = average_cents(units,row["sales"]) if row["sales"] else None
         items.append({**row,"name":name,"currency":currency,"gmv":float(amount) if amount is not None else None,
-                      "avg_price":round(units/row["sales"]/100,2) if row["sales"] else None,
+                      "avg_price":average / 100 if average is not None else None, **exact_amounts(gmv=units,avg_price=average),
                       "base_currency":base,"fx_rate":float(rate) if rate is not None else None,
                       "fx_date":scope["date"] if rate is not None else None,
                       "gmv_converted":float(converted) if converted is not None else None})
@@ -963,9 +1102,9 @@ def handle(db, path, params):
         category_scope = {**scope,"category":params.get("category") or ""}
         metrics, covered, activity = overview_period(db,category_scope)
         previous, previous_coverage, _ = overview_period(db,{**category_scope,"start_date":scope["prev_date"],
-                                          "date":(iso_day(scope["start_date"])-timedelta(days=1)).isoformat()})
-        changes = {k: period_growth(v,previous[k]) if covered[k]==previous_coverage[k]==scope["days"] else None
-                   for k,v in metrics.items()}
+                                          "date":(date.fromisoformat(scope["start_date"])-timedelta(days=1)).isoformat()})
+        changes = {k: period_growth(metrics[k],previous[k]) if covered[k]==previous_coverage[k]==scope["days"] else None
+                   for k in covered}
         result = {**category_scope,"metrics":metrics,"changes":changes,"coverage":covered,"activity":activity,
                   "trend":daily_trend(db,category_scope),"rankings":rankings,"categories":groups_for(db,scope,"category")}
         if params.get("board") == "1":
@@ -994,7 +1133,7 @@ def handle(db, path, params):
         if "reviews" in item["profile"]:
             from insights import sentiment
             item["review_sentiment"]=sentiment(item["profile"]["reviews"])
-        result = {**scope,"item":item,"trend":daily_trend(db,scope,item),"related":related_to(item,rows)}
+        result = {**scope,"item":item,"trend":daily_trend(db,scope,item),"related":related_to(item,rows,db,scope)}
         if kind=="lives":
             result["live_analysis"] = live_analysis(db,scope,item,rows,ranking)
         return result
@@ -1023,9 +1162,9 @@ def main():
         with sqlite3.connect(args.db) as db, StringIO(text,newline="") as stream:
             init(db)
             if args.file.suffix.lower() == ".csv":
-                records = csv.DictReader(stream)
+                records = csv_rows(stream)
             elif args.file.suffix.lower() == ".json":
-                records = json.load(stream)
+                records = json.load(stream, parse_float=Decimal)
                 if not isinstance(records,list):
                     raise ValueError("JSON 须为记录数组")
             else:

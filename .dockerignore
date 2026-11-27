@@ -14,3 +14,5 @@
 !/qa/samples/
 !/qa/samples/vision/
 !/qa/samples/vision/**
+!/connectors/
+!/connectors/*.py

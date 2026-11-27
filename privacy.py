@@ -43,6 +43,7 @@ def erase(db, uid, email):
     if has(db,"partner_files") and "uploader" in {r[1] for r in db.execute("PRAGMA table_info(partner_files)")}:
         remove("partner_files","uploader=?",one)
     remove("export_jobs","owner=? OR uid=?",(uid,uid))
+    remove("research_decisions","owner=? OR author=?",(uid,uid))
     for table in ("favorites","ranking_presets","saved_topics","creator_contacts","monitors","alerts","imports",
                   "api_minutes","partner_library","notification_preferences","research_permissions","research_runs",
                   "research_days","research_details","deleted_items","monitor_slot_requests"):
@@ -60,8 +61,8 @@ def erase(db, uid, email):
         else:
             sources=[r[0] for r in db.execute("SELECT id FROM analytics_sources WHERE id GLOB ?",(f"ws-{uid}-*",))]
         for source in sources:
-            for table in ("snapshot_revisions","stream_points","analytics_daily","analytics_entities","feed_contracts",
-                          "feed_arrivals","feed_items","research_permissions","research_runs","research_details"):
+            for table in ("source_baselines","snapshot_revisions","stream_points","analytics_daily","analytics_entities","feed_contracts",
+                          "feed_arrivals","feed_items","research_permissions","research_runs","research_details","research_decisions"):
                 remove(table,"source=?",(source,))
             remove("analytics_sources","id=?",(source,))
             remove("source_policy","source=?",(source,))

@@ -1,8 +1,10 @@
 import { translateText } from "./text-translation.js";
+import { decisionForm, submitDecision } from "./research-decisions.js";
 import { renderTools } from "./tools.js";
 import { askOnBoard, boardAssistant } from "./board-chat.js";
 import { downloadMarketReport } from "./resource-center.js";
 import { localeTag, displayDate, localMessage } from "./locale.js";
+import { adaptIdea, conditionLabels, referenceDraft, renderReferences } from "./filming.js";
 
 const icons = {
   dashboard:
@@ -158,6 +160,8 @@ const money = (v, c, short = true) =>
   v == null
     ? "—"
     : (currencySymbol[c] || c + " ") + (short ? compact(v, 2) : number(v));
+const metricMoney = (row, key, currency, short = true) =>
+  row[key + "_exact"] == null ? money(row[key], currency, short) : money(row[key + "_exact"], currency, false);
 const dateText = displayDate;
 const scope = { market: "US", days: 7, source: "demo", date: "" };
 try {
@@ -284,6 +288,7 @@ function updateScope(field, value) {
   delete p.days;
   delete p.page;
   if (current.view === "dashboard" && (field === "market" || field === "source")) delete p.category;
+  if (current.view === "inspiration" && (field === "market" || field === "source")) delete p.product_id;
   if (current.view === "detail" && (field === "source" || field === "market")) {
     location.hash = href(kinds[p.kind] ? p.kind : "dashboard");
     return;
@@ -390,7 +395,7 @@ function heading(view) {
     lives: "查看直播场次的观看与成交表现。",
     categories: "按商品成交额研究品类结构，进入对应商品库。",
     trends: "从话题、音乐和关键词中发现热门内容。",
-    inspiration: "从脚本和代表内容中寻找下一条创作方向。",
+    inspiration: "选一个想拍的商品，看看第一句怎么说、镜头怎么拍。",
   };
   const usesScope = !["account", "admin", "favorites", "monitor", "api", "resources", "plans"].includes(view);
   return (
@@ -498,7 +503,7 @@ function recordList(rows, currency, kind) {
           '</small></span></a>'+translateName(r)+'</td><td><span class="category-chip">' +
           esc(r.category || "—") +
           '</span></td><td class="num"><b>' +
-          money(r.gmv, currency) +
+          metricMoney(r, "gmv", currency) +
           (r.gmv_estimated?' <small data-ui-label>含来源估算</small>':'')+
           '</b></td><td class="num">' +
           number(extra ? r[extra] : r.sales) +
@@ -536,7 +541,7 @@ function chart(data, metric, currency) {
   const yFor = value => top + (floor-top) * (1-(value-min)/(max-min));
   const fmt = value => ["gmv","price"].includes(metric) ? money(value, currency) : compact(value);
   const points = observed.map(point => ({
-    x:xFor(Date.parse(point.date)), y:yFor(point[metric]), date:point.date, value:point[metric]
+    x:xFor(Date.parse(point.date)), y:yFor(point[metric]), date:point.date, label:point[metric+"_exact"] == null ? fmt(point[metric]) : money(point[metric+"_exact"], currency, false)
   }));
   const segments = [];
   for (const point of points) {
@@ -565,7 +570,7 @@ function chart(data, metric, currency) {
     return '<text x="'+xFor(day)+'" y="'+(height-2)+'" text-anchor="middle">'+new Date(day).toISOString().slice(5,10).replace('-','/')+'</text>';
   }).join('');
   const marks=points.map(p=>'<g><circle cx="'+p.x+'" cy="'+p.y+'" r="'+(points.length<=14?3.2:1.4)+'" fill="#c7f599" stroke="#245845"/>'+
-      '<circle class="chart-target" cx="'+p.x+'" cy="'+p.y+'" r="9"><title>'+esc(p.date+' · '+fmt(p.value))+'</title></circle></g>').join('');
+      '<circle class="chart-target" cx="'+p.x+'" cy="'+p.y+'" r="9"><title>'+esc(p.date+' · '+p.label)+'</title></circle></g>').join('');
   return '<svg class="plot" viewBox="0 0 '+width+' '+height+'" role="img" aria-label="'+esc(metricNames[metric])+'逐日走势"><defs><linearGradient id="fillplot" x1="0" x2="0" y1="0" y2="1"><stop offset="0%" stop-color="#c4f495" stop-opacity=".38"/><stop offset="100%" stop-color="#c4f495" stop-opacity=".015"/></linearGradient></defs>'+horizontal+paths+marks+dates+'</svg>';
 }
 function chartPanel(rows, currency, title = "市场成交走势", includePrice = false) {
@@ -655,7 +660,7 @@ function kpi(metrics, changes, currency) {
           "</span><small>" +
           esc(k === "gmv" ? currency : unit) +
           '</small></div><div class="kpi-value">' +
-          (k === "gmv" ? money(metrics[k], currency) : compact(metrics[k], 2)) +
+          (k === "gmv" ? metricMoney(metrics,k,currency) : compact(metrics[k], 2)) +
           '</div><div class="kpi-comparison">' +
           delta(changes?.[k]) +
           "<span>较上一周期</span></div></div>",
@@ -696,7 +701,7 @@ function boardRanking(board, currency) {
     '</th><th class="num">'+(growth?"净增粉丝":"销量")+'</th><th class="num">'+(growth?"粉丝数":"GMV · "+esc(currency))+'</th></tr></thead><tbody>'+
     board.items.map(r=>'<tr><td><span class="rank'+(r.rank<=3?' top':'')+'">'+r.rank+'</span></td><td><a class="record" href="'+detailHref(r)+'">'+
       thumb(r)+'<b>'+esc(r.name)+'</b></a>'+translateName(r)+'</td><td class="num">'+number(growth?r.follower_growth:r.sales)+'</td><td class="num">'+
-      (growth?number(r.followers):money(r.gmv,currency)+(r.gmv_estimated?' <small data-ui-label>含来源估算</small>':''))+'</td></tr>').join("")+
+      (growth?number(r.followers):metricMoney(r,"gmv",currency)+(r.gmv_estimated?' <small data-ui-label>含来源估算</small>':''))+'</td></tr>').join("")+
     '</tbody></table></div>':showEmpty())+'</section>';
 }
 const liveTime = value => value ? new Date(value).toISOString().slice(0,19).replace("T"," ") : "—";
@@ -770,7 +775,7 @@ function overview(data) {
     '<div class="panel-head board-category"><h2 data-ui-label>品类看板</h2>'+optionField("品类","category",categories,data.category)+'<button class="btn" data-market-report>下载市场报告</button></div>'+
     kpi(data.metrics, data.changes, data.currency)+
     '<dl class="board-activity">'+[["有销量商品",number(data.activity.active_products)],["有销量店铺",number(data.activity.active_shops)],
-      ["成交均价",money(data.activity.avg_price,data.currency,false)]].map(([label,value])=>'<div><dt data-ui-label>'+label+'</dt><dd>'+value+'</dd></div>').join("")+'</dl>'+
+      ["成交均价",metricMoney(data.activity,"avg_price",data.currency,false)]].map(([label,value])=>'<div><dt data-ui-label>'+label+'</dt><dd>'+value+'</dd></div>').join("")+'</dl>'+
     '<div class="dashboard-charts">'+chartPanel(data.trend,data.currency,data.category || "市场成交走势")+
     categoryPanel(data.categories)+'</div>'+boardLive(data)+'<div class="panel-head board-category"><h2>市场排行榜</h2><time>'+esc(dateText(data.date))+'</time></div><div class="board-list">'+data.boards.map(board=>boardRanking(board,data.currency)).join("")+
     '</div><a class="text-link" href="'+boardLink("tools",{tool:"partners"})+'">推荐与佣金 '+icon("arrow",14)+'</a>';
@@ -842,6 +847,28 @@ function libraryCategories(values, selected = "") {
   }
   return html;
 }
+function productReconciliation(report) {
+  if (!report) return "";
+  const en = localeTag() === "en-US";
+  const t = (zh, english) => en ? english : zh;
+  const labels = {matched:t("相符","matched"), missing:t("缺交","missing delivery"),
+    mismatch:t("有差异","mismatch"), unverified:t("未核验","unverified")};
+  const c = report.counts;
+  const scopes = [...new Set(report.days.map(day => day.shop_scope).filter(Boolean))];
+  const scopeLabel = scopes.join(" / ") || (report.source === "demo"
+    ? t("合成演示数据","synthetic demo data") : t("本窗口暂无店铺范围声明","no shop scope declared in this window"));
+  const summary = Object.entries(labels).map(([key,label]) => en ? c[key]+" "+label : label+" "+c[key]+" 天").join(" · ");
+  const display = value => value ? [...(value.display_counts || [value.product_rows, value.sales]), value.gmv].join(" / ") : "—";
+  const rows = report.days.map(day => '<tr><td>'+esc(day.date)+'</td><td>'+esc(labels[day.status])+'</td><td>'+
+    esc(day.shop_scope || "—")+'</td><td>'+esc(display(day.expected))+'</td><td>'+esc(display(day.actual))+'</td></tr>').join("");
+  return '<details data-source-reconciliation data-matched="'+c.matched+'" data-missing="'+c.missing+
+    '" data-mismatch="'+c.mismatch+'" data-unverified="'+c.unverified+'"><summary><strong>'+t("商品日对账","Daily product reconciliation")+
+    '</strong> · <span data-source-text>'+esc(report.source)+' · '+esc(scopeLabel)+'</span> · '+esc(summary)+'</summary>'+
+    '<p>'+t("核对当前来源和市场的全部商品，数值依次为商品行数 / 销量 / GMV","All products in this source and market. Values are product rows / units sold / GMV")+
+    ' ('+esc(report.currency)+')</p><div class="table-wrap"><table><thead><tr>'+
+    [t("统计日","Date"),t("核对状态","Result"),t("店铺范围","Declared scope"),t("商户基准","Merchant control"),t("已入库","Recorded")].map(label=>'<th>'+label+'</th>').join("")+
+    '</tr></thead><tbody data-source-text>'+rows+'</tbody></table></div></details>';
+}
 function library(view, data, p, presets) {
   const sorts = {
     gmv: "成交额从高到低",
@@ -898,7 +925,7 @@ function library(view, data, p, presets) {
       p.sort || (p.segment === "breakout" ? "growth" : "gmv"),
     ) +
     "</div>" +
-    researchFilters(view,data,p,presets) +
+    productReconciliation(data.reconciliation) + researchFilters(view,data,p,presets) +
     (p.segment === "breakout"
       ? '<p class="rule-note">黑马达人要求两期快照完整，本期销量至少 20 件，前期有成交，成交额环比增长至少 15%，期末粉丝少于 20 万。<small> v1</small></p>'
       : p.segment==="promoted"?'<p class="rule-note">热推使用来源在窗口末次快照中提供的推广标记，按所选指标排序。</p>':"") +
@@ -958,7 +985,7 @@ function livePanels(data) {
   const productRows = analysis.products.map(item=>{
     const name = item.name ? '<a class="text-link" href="'+detailHref({kind:"products",id:item.id})+'">'+esc(item.name)+'</a>' : esc(item.id);
     return '<tr><td>'+name+'</td><td>'+esc(item.first_seen)+' — '+esc(item.last_seen)+'</td><td class="num">'+number(item.days)+
-      '</td><td class="num">'+number(item.sales)+'</td><td class="num">'+money(item.gmv,data.currency,false)+'</td></tr>';
+      '</td><td class="num">'+number(item.sales)+'</td><td class="num">'+metricMoney(item,"gmv",data.currency,false)+'</td></tr>';
   });
   const table = (headers,rows) => '<div class="table-wrap"><table class="records"><thead><tr>'+
     headers.map(label=>'<th>'+esc(localMessage(label))+'</th>').join('')+'</tr></thead><tbody>'+rows.join('')+'</tbody></table></div>';
@@ -988,6 +1015,9 @@ function details(data) {
     '</p></div><div class="profile-actions"><button class="btn" data-save>' +
     icon("favorites", 15) +
     "加入收藏</button>" +
+    (r.kind === "products" ? '<a class="btn" data-product-inspiration href="' + esc(href("inspiration", {
+      source:data.source, market:data.market, days:data.days, date:data.date, product_id:r.id
+    })) + '">为这个商品找灵感</a>' : '') +
     (r.kind === "creators" ? '<a class="btn" href="' + esc(href("tools", { tool: "contacts", id: r.id, ...scopeParams(), date: data.date })) + '">' + icon("creators", 15) + '合作联系簿</a>' : '') +
     (["products", "videos", "lives"].includes(r.kind)
       ? '<button class="primary" data-monitor>' +
@@ -996,8 +1026,8 @@ function details(data) {
       : "") +
     '</div></div><div class="detail-stats">' +
     [
-      ["成交额", money(r.gmv, data.currency, false)],
-      ["销量", number(r.sales)],
+      ["成交额", money(data.decision_evidence?.current.gmv ?? r.gmv_exact ?? r.gmv, data.currency, false)],
+      ["销量", number(data.decision_evidence?.current.sales_exact ?? r.sales)],
       ["观看次数", number(r.views)],
       ["成交额环比", delta(r.growth)],
     ]
@@ -1006,7 +1036,7 @@ function details(data) {
           "<div><small>" + l + "</small><strong>" + v + "</strong></div>",
       )
       .join("") +
-    '</div></section><div class="detail-charts">' +
+    '</div></section>' + decisionForm(data,esc) + '<div class="detail-charts">' +
     chartPanel(data.trend, data.currency, "每日表现", data.item.kind==="products") +
     '<section class="panel fact-panel"><div class="panel-head"><h2>对象档案</h2></div>' +
     [
@@ -1018,7 +1048,7 @@ function details(data) {
       ["退款件数",r.refund_units==null?'':String(r.refund_units)],
       ["成交额口径",r.gmv_estimated?localMessage("含来源估算"):""],
       ["所属分组", segmentOptions[r.kind]?.[r.segment] || r.segment],
-      ["价格", r.price == null ? "" : money(r.price, data.currency, false)],
+      ["价格", r.price == null ? "" : metricMoney(r, "price", data.currency, false)],
       ["话题", r.tag],
       ["音乐", r.music],
       ["关键词", r.keyword],
@@ -1069,12 +1099,12 @@ function marketsTable(data) {
           " <small>" +
           esc(r.market) +
           '</small></a></td><td class="num"><b>' +
-          money(r.gmv, r.currency) +
+          metricMoney(r, "gmv", r.currency) +
           (r.includes_estimates?' <small data-ui-label>含来源估算</small>':'')+
           "</b> <small>" +
           esc(r.currency) +
           '</small></td><td class="num">' +
-          money(r.avg_price, r.currency, false) +
+          metricMoney(r, "avg_price", r.currency, false) +
           '</td><td class="num">' +
           number(r.sales) +
           '</td><td class="num">' +
@@ -1130,9 +1160,9 @@ function marketStructure(d) {
           .map(
             (b) =>
               "<div><strong>" +
-              money(b.min, d.currency, false) +
+              metricMoney(b,"min",d.currency,false) +
               " – " +
-              money(b.max, d.currency, false) +
+              metricMoney(b,"max",d.currency,false) +
               "</strong><span>" +
               number(b.count) +
               " 款商品 · " +
@@ -1224,6 +1254,145 @@ const trendLabels = {
   script: "脚本",
   category: "品类",
 };
+function ideaConditions(idea) {
+  const key = JSON.stringify([idea.topic, idea.subject]);
+  const stored = history.state?.filming?.[key] || [];
+  return Object.keys(conditionLabels).filter(k => stored.includes(k));
+}
+
+function shootableDraft(idea) {
+  const selected = ideaConditions(idea);
+  return {...adaptIdea(idea, selected, localeTag() === "en-US"), selected};
+}
+
+function shotList(idea) {
+  return [["第一镜", idea.first], ["接着拍", idea.action], ["收尾画面", idea.reveal]].map(([label, shot]) =>
+    '<li><strong>' + esc(localMessage(label)) + '</strong><span>' + esc(shot) + '</span></li>').join("");
+}
+
+function opening(idea) {
+  return '<small>' + esc(localMessage(idea.selected.includes("faceless") ? "开场字幕" : "开场口播")) + '</small>' + esc(idea.hook);
+}
+
+function filmingConditions(draft) {
+  return '<fieldset><legend>' + esc(localMessage("选择拍摄条件，可多选")) + '</legend>' +
+    Object.entries(conditionLabels).map(([key, label]) => '<label><input type="checkbox" data-idea-condition="' + key + '"' +
+      (draft.selected.includes(key) ? ' checked' : '') + '>' + esc(localMessage(label)) + '</label>').join("") + '</fieldset>';
+}
+
+async function loadDailyReferences(panel, page, params, id) {
+  const en = localeTag() === "en-US";
+  try {
+    const result = await api("inspiration/videos", {...params, tz: Intl.DateTimeFormat().resolvedOptions().timeZone});
+    if (id !== renderId) return;
+    const offset = page.cards.length;
+    const items = result.items.map((row, i) => {
+      const idea = referenceDraft(row, en);
+      page.cards.push(idea);
+      const draft = shootableDraft(idea);
+      return '<article class="daily-reference" data-idea-index="' + (offset + i) + '"><small data-source-text>' +
+        esc(row.subject) + ' · ' + (row.match === 'name' ? (en ? 'Name or model in title' : '标题含商品名或型号') : (en ? 'Related product' : '同类参考')) +
+        '</small><h3><a data-source-text href="' + esc(row.url) + '" target="_blank" rel="noopener noreferrer">' + esc(row.title) +
+        ' ↗</a></h3><small data-source-text>' + esc([row.platform, row.author, row.published].filter(Boolean).join(' · ')) + '</small>' +
+        '<p>' + esc(idea.title) + '</p><details class="idea-adapt"' + (draft.selected.length ? ' open' : '') + '><summary>' + esc(localMessage("按我的条件改拍")) + '</summary>' +
+        filmingConditions(draft) + '<blockquote>' + opening(draft) + '</blockquote><ol class="idea-shots" aria-live="polite">' + shotList(draft) +
+        '</ol><button class="btn" data-copy-idea="' + (offset + i) + '">' + esc(localMessage("复制拍摄稿")) + '</button></details></article>';
+    });
+    const status = en ? items.length + ' videos · ' + result.day : result.day + ' · ' + items.length + ' 条原片';
+    const shortage = items.length >= result.target ? '' : result.incomplete_search
+      ? (en ? 'Some sources are temporarily unavailable. Reopen in a few minutes to retry.' : '部分搜索暂时失败，几分钟后重新打开可补查。')
+      : (en ? 'These are all the matching videos found. Try a product type or another name to broaden the search.' : '这次只找到这些相关原片。可用商品通用名或别称再找一次。');
+    panel.querySelector('[data-daily-status]').textContent = status;
+    panel.querySelector('[data-daily-list]').innerHTML = (shortage ? '<p class="idea-empty">' + esc(shortage) + '</p>' : '') +
+      '<div class="daily-videos">' + items.join('') + '</div>';
+  } catch {
+    if (id === renderId) panel.querySelector('[data-daily-status]').textContent = en ? 'Video search unavailable. Reload to retry.' : '视频检索暂时不可用，可刷新重试。';
+  }
+}
+
+function productVideoPanel(data, windowParams) {
+  if (!data.product) return '';
+  const en = localeTag() === "en-US";
+  const videos = data.linked_videos.map(v => {
+    const evidence = en ? v.linked_days + ' linked day(s)' : '关联 ' + v.linked_days + ' 天';
+    return '<a class="related-card" data-video-id="' + esc(v.id) + '" href="' +
+      esc(href("detail", {...windowParams, kind:"videos", id:v.id})) + '">' + thumb(v) +
+      '<span><b data-source-text>' + esc(v.name) + '</b><small>' + esc(evidence + ' · ' + v.first_seen + ' – ' + v.last_seen) +
+      '</small></span>' + icon("next", 14) + '</a>';
+  });
+  return '<section class="panel" data-product-videos><div class="panel-head"><h2>' +
+    (en ? 'Videos linked to this product' : '这个商品的关联视频') + '</h2></div><div class="panel-body">' +
+    (videos.length ? '<p class="muted">' + (en ? 'Links come from daily video records. Video detail metrics cover the whole video.' :
+      '此处展示视频日快照记录的商品关联。视频详情中的成交额与销量为整条视频的指标。') +
+      '</p><div class="related-grid">' + videos.join('') + '</div>' :
+      '<p class="muted">' + (en ? 'No video in this source and period records a link to this product.' :
+        '当前来源和日期范围内没有记录与这个商品关联的视频。') + '</p>') + '</div></section>';
+}
+
+function inspirationBoard(data) {
+  const t = localMessage;
+  const subject = data.subject;
+  const en = localeTag() === "en-US";
+  const windowParams = {source:data.source, market:data.market, date:data.date, days:data.days};
+  const cards = data.cards.map((idea, index) => {
+    const product = idea.product
+      ? '<a class="idea-product" href="' + detailHref(idea.product) + '">' + thumb(idea.product) + '<span data-source-text>' + esc(idea.subject) + '</span></a>'
+      : '<span class="idea-product" data-source-text>' + esc(idea.subject) + '</span>';
+    const draft = shootableDraft(idea);
+    const adapt = idea.topic ? '<details class="idea-adapt"' + (draft.selected.length ? ' open' : '') + '><summary>' +
+      esc(t("按我的条件改拍")) + '</summary>' + filmingConditions(draft) + '</details>' : '';
+    return '<article class="panel idea-card" data-idea-index="' + index + '">' + product + '<h3>' + esc(idea.title) +
+      '</h3><p class="idea-viewer">' + esc(t("拍给谁看")) + ' · ' + esc(idea.viewer) + '</p>' +
+      '<blockquote>' + opening(draft) + '</blockquote>' +
+      renderReferences(idea.references, localeTag() === "en-US", esc) + adapt +
+      '<ol class="idea-shots" aria-live="polite">' + shotList(draft) +
+      '</ol><button type="button" class="btn" data-copy-idea="' + index + '">' + esc(t("复制拍摄稿")) + '</button></article>';
+  }).join("");
+  const options = data.products.map(p => '<option value="' + esc(p.name) + '"></option>').join("");
+  return '<form class="panel idea-search" id="idea-search"><label for="idea-subject">' +
+    esc(t("你想拍什么商品？")) + '</label><div><input id="idea-subject" name="subject" list="idea-products" required maxlength="1500" value="' +
+    esc(subject) + '" placeholder="' + esc(t("输入商品名称或型号")) + '"><datalist id="idea-products">' + options +
+    '</datalist><button class="primary">' + esc(t("看选题")) + '</button></div></form>' +
+    (data.products.length ? '<nav class="reference-topics" aria-label="' + esc(t("本期商品")) + '"><strong>' + esc(t("本期商品")) + '</strong>' +
+    data.products.slice(0, 6).map(({name,id}) => '<a class="btn" data-source-text href="' + esc(href("inspiration", {...windowParams, product_id:id})) + '">' + esc(name) + '</a>').join("") + '</nav>' : '') +
+    productVideoPanel(data, windowParams) +
+    (subject || (data.source === "demo" && data.products.length) ? '<section class="panel daily-shelf" data-daily><div class="idea-heading"><h2>' +
+      esc(t("今日视频参考")) + '</h2><small data-daily-status role="status">' +
+      (data.source === "demo" ? esc(t("正在查找相关原片…")) : (en ? 'Search term sent to Dailymotion and, when needed, MyMemory' :
+        '搜索词将发给 Dailymotion，需翻译时也会发给 MyMemory') + ' · ' + esc(subject)) + '</small></div>' +
+      (data.source === "demo" ? '' : '<button type="button" class="btn" data-public-video-search>' +
+        (en ? 'Search public videos with this term' : '用这个词搜索公开视频') + '</button>') + '<div data-daily-list></div></section>' : '') +
+    '<section><div class="idea-heading"><h2>' + esc(t(subject ? "这个商品可以这样拍" : "本期商品可以这样拍")) + '</h2>' +
+    (subject ? '<a class="text-link" href="' + esc(href("inspiration", windowParams)) + '">' + esc(t("看本期选题")) + '</a>' : '') +
+    '</div>' + (!subject && !data.products.length ? '<p class="idea-empty">' + esc(t("本期没有商品记录。输入你想拍的商品，就可以查找原片和选题。")) + '</p>' : '') +
+    '<div class="idea-grid">' + cards + '</div>' +
+    '</section><a class="text-link idea-research" href="' + esc(href("trends", {...windowParams, group:"script"})) + '">' +
+    esc(t("查看脚本排行与代表视频")) + icon("arrow",14) + '</a>';
+}
+
+async function copyIdea(button, idea) {
+  const fields = [["拍给谁看", "viewer"], [idea.selected.includes("faceless") ? "开场字幕" : "开场口播", "hook"], ["第一镜", "first"], ["接着拍", "action"], ["收尾画面", "reveal"]];
+  const conditions = idea.selected.map(k => localMessage(conditionLabels[k])).join(" · ");
+  const source = idea.references?.[0];
+  const draft = [idea.title, idea.subject, conditions, ...fields.map(([label,key]) => localMessage(label) + " · " + idea[key]),
+    source && (localeTag() === "en-US" ? "Reference video" : "参考原片") + " · " + source.author + " · " + source.url].filter(Boolean).join("\n");
+  try {
+    await navigator.clipboard.writeText(draft);
+    toast(localMessage("拍摄稿已复制"));
+  } catch {
+    let field = button.parentElement.querySelector("textarea");
+    if (!field) {
+      field = document.createElement("textarea");
+      field.readOnly = true;
+      field.rows = 6;
+      field.setAttribute("aria-label",localMessage("拍摄稿"));
+      button.after(field);
+    }
+    field.value = draft;
+    field.select();
+    toast(localMessage("请复制已选中的拍摄稿"));
+  }
+}
 function trends(view, data, p) {
   const gr = data.group,
     rows = data.items || [],
@@ -1284,7 +1453,7 @@ function trends(view, data, p) {
               '">' +
               esc(r.name) +
               '</a></td><td class="num"><b>' +
-              money(r.gmv, data.currency) +
+              metricMoney(r, "gmv", data.currency) +
               (r.includes_estimates?' <small data-ui-label>含来源估算</small>':'')+
               '</b></td><td class="num">' +
               number(r.sales) +
@@ -1312,14 +1481,14 @@ async function trendView(view, p) {
     api("trends",{...s,group}),api("trend-study",{...s,group,topic:p.topic||""})
   ]);
   const caption=study.forecast.length
-    ? "未来 7 日沿用上周同曜日的观测值。最近 7 日回测平均绝对误差："+money(study.mae.gmv,study.currency,false)+" / "+number(study.mae.sales)+" 件。"
+    ? "未来 7 日沿用上周同曜日的观测值。最近 7 日回测平均绝对误差："+metricMoney(study.mae,"gmv",study.currency,false)+" / "+number(study.mae.sales)+" 件。"
     : "最近 14 日记录不连续，暂缺预测。";
   const english=localeTag()==="en-US";
-  const method=english?(study.forecast.length?"Next 7 days use the last observed value for the same weekday. Previous 7-day backtest MAE: "+money(study.mae.gmv,study.currency,false)+" / "+number(study.mae.sales)+" units.":localMessage(caption)):caption;
+  const method=english?(study.forecast.length?"Next 7 days use the last observed value for the same weekday. Previous 7-day backtest MAE: "+metricMoney(study.mae,"gmv",study.currency,false)+" / "+number(study.mae.sales)+" units.":localMessage(caption)):caption;
   const outlook='<section class="panel"><div class="panel-head"><h2>趋势预测与采样覆盖</h2></div><div class="panel-body">'+
     '<p>'+esc(study.topic||(english?"Market total":"所选市场整体"))+' · '+esc(study.sample_start)+' — '+esc(study.date)+(english?' · Observed ':' · 已观测 ')+study.observed_days+(english?'/28 days</p>':'/28 天</p>')+
     '<p>'+esc(method)+'</p>'+(study.missing_dates.length?'<details><summary data-ui-label>缺失日期</summary>'+esc(study.missing_dates.join("、"))+'</details>':'')+
-    (study.forecast.length?'<div class="table-wrap"><table class="records"><thead><tr><th>预测日期</th><th>预估 GMV</th><th>预估销量</th></tr></thead><tbody>'+study.forecast.map(r=>'<tr><td>'+esc(r.date)+'</td><td>'+money(r.gmv,study.currency,false)+'</td><td>'+number(r.sales)+'</td></tr>').join('')+'</tbody></table></div>':'')+'</div></section>';
+    (study.forecast.length?'<div class="table-wrap"><table class="records"><thead><tr><th>预测日期</th><th>预估 GMV</th><th>预估销量</th></tr></thead><tbody>'+study.forecast.map(r=>'<tr><td>'+esc(r.date)+'</td><td>'+metricMoney(r,"gmv",study.currency,false)+'</td><td>'+number(r.sales)+'</td></tr>').join('')+'</tbody></table></div>':'')+'</div></section>';
   if (!p.topic || view === "categories")
     return (
       (view === "categories" ? marketStructure(data) : "") +
@@ -1332,7 +1501,7 @@ async function trendView(view, p) {
     " · 关联视频</span><h2>" +
     esc(p.topic) +
     '</h2></div><button class="btn" data-save-topic>收藏此灵感</button><a class="text-link" href="' +
-    esc(href(view, { group })) +
+    esc(href(view === "inspiration" ? "trends" : view, { ...s, date: data.date, group })) +
     '">返回排行</a></div>' +
     relatedCards(selected) +
     "</section>"+outlook
@@ -1523,10 +1692,15 @@ async function render() {
       data = await api("detail", { ...scopeParams(), kind: p.kind, id: p.id });
       html = details(data);
     } else if (view === "search") html = await searched(p);
-    else html = await trendView(view, p);
+    else if (view === "inspiration" && !p.topic) {
+      data = await api("inspiration", {...scopeParams(), product_id:p.product_id, subject:p.subject, locale:localeTag()});
+      html = inspirationBoard(data);
+    } else html = await trendView(view, p);
     if (id !== renderId) return;
     content.innerHTML = html;
     cachedPage = data;
+    const daily = content.querySelector('[data-daily]');
+    if (daily && data.source === "demo") void loadDailyReferences(daily, data, {...scopeParams(), subject:data.subject}, id);
   } catch (e) {
     if (id !== renderId) return;
     mount.innerHTML =
@@ -1669,6 +1843,18 @@ document.addEventListener("keydown", (e) => {
 });
 $("#app").addEventListener("change", (e) => {
   const t = e.target;
+  if (t.hasAttribute("data-idea-condition")) {
+    const card = t.closest("[data-idea-index]");
+    const idea = cachedPage.cards[Number(card.dataset.ideaIndex)];
+    const key = JSON.stringify([idea.topic, idea.subject]);
+    const selected = Array.from(card.querySelectorAll("[data-idea-condition]:checked"), el => el.dataset.ideaCondition);
+    history.replaceState({...history.state, filming: {...history.state?.filming, [key]: selected}}, "");
+    const draft = shootableDraft(idea);
+    card.querySelector("blockquote").innerHTML = opening(draft);
+    card.querySelector(".idea-shots").innerHTML = shotList(draft);
+    card.querySelector("textarea")?.remove();
+    return;
+  }
   if (t.dataset.scope) {
     updateScope(t.dataset.scope, t.value);
     return;
@@ -1687,9 +1873,19 @@ $("#app").addEventListener("change", (e) => {
     change({ kind: t.value });
   }
 });
+$("#app").addEventListener("input", (e) => {
+  if (e.target.form?.id === "research-decision" && cachedPage) {
+    cachedPage.decisionDraft = e.target.value;
+    cachedPage.decisionSaved = false;
+    e.target.form.querySelector("output").textContent = "";
+  }
+});
 $("#app").addEventListener("submit", (e) => {
   const f = e.target;
-  if (f.id === "ranking-ranges") {
+  if (f.id === "research-decision") {
+    e.preventDefault();
+    void submitDecision(f,cachedPage,api,()=>cachedPage);
+  } else if (f.id === "ranking-ranges") {
     e.preventDefault();
     for (const metric of Object.keys(metricRanges(current.view))) {
       const min=f.elements["min_"+metric], max=f.elements["max_"+metric];
@@ -1704,6 +1900,11 @@ $("#app").addEventListener("submit", (e) => {
   } else if (f.id === "list-search") {
     e.preventDefault();
     change({ q: f.elements.q.value.trim(), page: 1 });
+  } else if (f.id === "idea-search") {
+    e.preventDefault();
+    const subject = f.elements.subject.value.trim();
+    if (subject) change({ subject, product_id:null });
+    else f.elements.subject.focus();
   } else if (f.id === "board-question") {
     e.preventDefault();
     askOnBoard(f,{...scopeParams(),date:scope.date || meta.date},{esc,href,t:localMessage,icon,api});
@@ -1720,6 +1921,18 @@ $("#app").addEventListener("submit", (e) => {
 $("#app").addEventListener("click", (e) => {
   const t = e.target.closest("button");
   if (!t) return;
+  if (t.hasAttribute("data-public-video-search")) {
+    const panel = t.closest("[data-daily]");
+    t.remove();
+    panel.querySelector("[data-daily-status]").textContent = localMessage("正在查找相关原片…");
+    void loadDailyReferences(panel, cachedPage, {...scopeParams(), subject:cachedPage.subject, external_search:"1"}, renderId);
+    return;
+  }
+  if (t.hasAttribute("data-copy-idea")) {
+    const idea = cachedPage?.cards?.[Number(t.dataset.copyIdea)];
+    if (idea) copyIdea(t, shootableDraft(idea));
+    return;
+  }
   if (t.hasAttribute("data-board-room")) { selectBoardRoom(t); return; }
   if (t.hasAttribute("data-translate-board")) {
     const names = Array.from(t.closest(".board-ranking").querySelectorAll("[data-translate-name]"),button=>button.dataset.translateName);
@@ -1780,9 +1993,10 @@ window.addEventListener("tikflowso:locale", async () => {
     return;
   }
   const oldRoute = location.hash;
-  const draft = document.querySelector(".workspace-content input[name=q]")?.value;
+  const draftSelector = current.view === "inspiration" ? "#idea-subject" : ".workspace-content input[name=q]";
+  const draft = document.querySelector(draftSelector)?.value;
   await render();
-  const field = document.querySelector(".workspace-content input[name=q]");
+  const field = document.querySelector(draftSelector);
   if (location.hash === oldRoute && field && draft !== undefined) field.value = draft;
 });
 window.addEventListener("hashchange", () => {

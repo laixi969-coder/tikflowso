@@ -69,9 +69,9 @@ export async function renderAdmin(root){
   function weeklyReport(){
     const pct=value=>value==null?'—':value+'%';
     return '<section class="panel ca-editor"><h2>研究周报</h2><form data-weekly><label>统计截止日（UTC）<input required name="date" type="date" value="'+e(weekly.end)+'"></label><button class="btn">查看周报</button></form><p>'+e(weekly.start)+' — '+e(weekly.end)+'</p>'+
-      '<div class="table-wrap"><table class="records"><thead><tr>'+['数据来源','活跃工作区','首次完成选品','首次完成占比','跨日复访','跨日复访占比'].map(v=>'<th>'+e(v)+'</th>').join('')+'</tr></thead><tbody>'+
-      weekly.items.map(r=>'<tr><td data-ui-label>'+(r.cohort==='demo'?'演示数据':'导入数据')+'</td>'+[r.active,r.first_completed,pct(r.first_completed_pct),r.repeat_days,pct(r.repeat_pct)].map(v=>'<td>'+e(v)+'</td>').join('')+'</tr>').join('')+
-      '</tbody></table></div><p>活跃指在工作台查看商品榜或详情。首次完成指同一统计日、市场、来源与研究窗口中，查看榜单和详情后首次收藏商品或导出榜单。跨日复访指本周至少两天有研究行为。</p></section>';
+      '<div class="table-wrap"><table class="records" data-weekly-research><thead><tr>'+['数据来源','活跃工作区','首次完成选品','首次完成占比','跨日复访','跨日复访占比','首次打开商品榜','五分钟内完成','五分钟完成率'].map(v=>'<th>'+e(v)+'</th>').join('')+'</tr></thead><tbody>'+
+      weekly.items.map(r=>'<tr data-cohort="'+r.cohort+'"><td data-ui-label>'+(r.cohort==='demo'?'演示数据':'导入数据')+'</td>'+[r.active,r.first_completed,pct(r.first_completed_pct),r.repeat_days,pct(r.repeat_pct),r.first_starts,r.within_300s,pct(r.within_300s_pct)].map(v=>'<td>'+e(v)+'</td>').join('')+'</tr>').join('')+
+      '</tbody></table></div><p>活跃指查看过商品榜或详情，或在当天完成选品。完成选品指同一研究窗口查榜和详情后，收藏商品、保存判断或导出榜单。跨日复访按本周至少两个研究日统计。</p><p>五分钟完成率以本周首次打开该类来源商品榜的工作区为分母，包含未完成者。自首次入榜计满 300 秒，跨 UTC 截止日的完成仍计入首访周。</p></section>';
   }
   async function poll(){
     clearTimeout(timer);

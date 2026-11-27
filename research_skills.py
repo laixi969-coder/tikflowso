@@ -76,8 +76,9 @@ def analyze(db, data, scope, english):
     candidates = [r for r in rows if r["kind"] == kind]
     matches = candidates
     if focus:
-        matches = [r for r in candidates if any(focus.casefold() in str(r.get(k) or "").casefold()
-                                                 for k in ("id","name","subtitle","category"))]
+        by_id = [r for r in candidates if r["id"] == focus]
+        matches = by_id or [r for r in candidates if any(focus.casefold() in str(r.get(k) or "").casefold()
+                                                         for k in ("id","name","subtitle","category"))]
     elif data["text"] not in (default_zh,default_en):
         # An edited brief may name several records. Match complete IDs/names;
         # ordinary words in the rest of the brief are not a search filter.
@@ -93,7 +94,10 @@ def analyze(db, data, scope, english):
         if mentioned:
             matches = mentioned
     if key == "creator_fit":
-        shortlist = sorted((r for r in matches if r["views"] and r["sales"] is not None),
+        complete_views = {row[0] for row in db.execute("""SELECT id FROM analytics_daily WHERE
+            source=:source AND market=:market AND kind='creators' AND date BETWEEN :start_date AND :date
+            GROUP BY id HAVING COUNT(views)=COUNT(*) AND SUM(views)>0""",resolved)}
+        shortlist = sorted((r for r in matches if r["id"] in complete_views),
                            key=lambda r:(-r["sales"]/r["views"],-r["sales"],r["id"]))[:3]
     else:
         shortlist = analytics.leaderboard(matches,kind,{"sort":sort},limit=3)
@@ -134,7 +138,7 @@ def analyze(db, data, scope, english):
 
     lead = shortlist[0]
     name = lead["name"]
-    related = analytics.related_to(lead,rows)
+    related = analytics.related_to(lead,rows,db,resolved)
     def linked(target, count=2):
         return sorted((r for r in related if r["kind"] == target),key=lambda r:(-r["sales"],r["id"]))[:count]
     def relation(target):

@@ -1,0 +1,8 @@
+{
+  "name": "tikflowso-assistant-eval",
+  "version": "1.0.0",
+  "private": true,
+  "engines": {"node": ">=22.22"},
+  "scripts": {"test": "node --test grade.test.cjs && python3 run.py"},
+  "devDependencies": {"promptfoo": "0.126.0"}
+}

@@ -1,0 +1,10 @@
+{
+  "name": "tikflowso-browser-acceptance",
+  "private": true,
+  "scripts": {
+    "test:research": "node --test research_decision_state.cjs && node research_acceptance.cjs"
+  },
+  "devDependencies": {
+    "playwright-core": "1.65.0"
+  }
+}
